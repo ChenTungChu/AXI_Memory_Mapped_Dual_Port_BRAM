@@ -1,53 +1,76 @@
 AXI Dual-Port Multi-Clock BRAM
-High-Performance AXI4 Memory-Mapped Scratchpad RAM
+
+AXI4 Memory-Mapped True Dual-Port Scratchpad RAM
 
 Version: 1.0
 Author: Eric
-Description:
-This module implements a synthesizable, IP-like Dual-Port Block RAM with 2 fully independent AXI4 Memory-Mapped slave interfaces, operating under two independent clock domains.
-It is intended to serve as a low-latency scratchpad memory for DMA engines, AI/ML accelerators, or other multi-clock SoC subsystems.
 
-1. Features
-✔ True Dual-Port RAM
+1. Overview
 
-Port 0 (AXI Slave): dma_clk domain
+This module implements a synthesizable, IP-style True Dual-Port Block RAM with two fully independent AXI4 Memory-Mapped slave interfaces, each operating in its own clock domain.
 
-Port 1 (AXI Slave): core_clk domain
+It is designed as a low-latency shared scratchpad memory for:
 
-2 fully independent read/write pipes
+DMA engines
 
-No cross-domain handshake required
+AI / ML accelerator cores
 
-Synthesizes into FPGA True-Dual-Port BRAM
+Multi-clock SoC subsystems
 
-✔ AXI4-Lite / AXI4-MM Compatible
+Each AXI port connects directly to one side of the memory without requiring any explicit CDC logic between ports.
 
-Each port contains a complete AXI-MM slave with:
+2. Key Features
+✔ True Dual-Port, Multi-Clock Operation
 
-AR, AW, W, R, B channels
+Port 0: AXI-MM Slave in dma_clk domain
 
-Write strobe (WSTRB) supporting byte-wise writes
+Port 1: AXI-MM Slave in core_clk domain
 
-Burst length (AxLEN) support (depending on config)
+Fully independent read and write paths per port
 
-✔ Simulation-Only Safety Checking
+No cross-domain handshake or FIFO required
 
-Write-Write Conflict Detection
-When both ports attempt to write the same byte in the same cycle.
+Intended to infer FPGA True Dual-Port BRAM (TDP RAM)
 
-Read-After-Write Forwarding
-Ensures deterministic read behavior across ports.
+Each port behaves as a standalone AXI slave connected to a shared memory array.
 
-Starvation Monitor
-Detects if either port is permanently blocked from memory access.
+✔ AXI4 Memory-Mapped Interface
 
-✔ Configurable Parameters
+Each port implements a complete AXI4-MM slave interface:
+
+AW, W, B, AR, R channels
+
+Byte-wise write enable via WSTRB
+
+AXI burst support (configurable; see Parameters)
+
+AXI response signaling (OKAY / SLVERR)
+
+One AXI master per port is assumed. Arbitration between multiple masters must be handled externally.
+
+✔ Simulation-Oriented Safety Checks (Non-Synthesizable)
+
+The following mechanisms are intended for verification and debug only and may be excluded or simplified in synthesis:
+
+Write-Write conflict detection
+
+Detects same-byte writes from both ports in the same cycle
+
+Read-After-Write forwarding (cross-port)
+
+Ensures deterministic read behavior in simulation
+
+Starvation monitoring
+
+Warns if one port is permanently blocked by the other
+
+✔ Parameterized Design
 Parameter	Description
-DATA_WIDTH	32 / 64 / 128-bit
-ADDR_WIDTH	Address bit width
+DATA_WIDTH	Data width per word (32 / 64 / 128 bits)
+ADDR_WIDTH	AXI address width
 DEPTH_WORDS	Memory depth in words
 ID_WIDTH	AXI transaction ID width
-2. Architecture Overview
+3. Architecture Overview
                 +-------------------------------+
    dma_clk ---> |  AXI-MM Slave Port 0          |
                 |    (frontend logic)           |
@@ -56,7 +79,8 @@ ID_WIDTH	AXI transaction ID width
                                 | Port 0 Access
                                 v
                       +-------------------+
-                      |  TDP BRAM Memory  |
+                      | True Dual-Port    |
+                      | BRAM Memory       |
                       | (byte-addressable)|
                                 ^
                                 |
@@ -66,191 +90,176 @@ ID_WIDTH	AXI transaction ID width
                 +-------------------------------+
 
 
-The memory block is implemented as:
+The memory array is implemented as a byte-addressable structure:
 
 logic [7:0] mem_byte [0:DEPTH_BYTES-1];
 
 
-This allows:
+This enables:
 
 Byte-granular WSTRB writes
 
-Clean conflict detection
+Per-byte conflict detection
 
-FPGA to infer true dual-port BRAM cells
+Clean inference of true dual-port BRAM resources
 
-3. Multi-Clock Behavior
-✔ Independent clock domains
+4. Multi-Clock Behavior
+✔ Independent Clock Domains
 
 dma_clk drives Port 0
 
 core_clk drives Port 1
 
-Ports may operate at completely unrelated frequencies and phases
+Clocks may be unrelated in frequency and phase
 
-No CDC logic is needed between ports
+No explicit CDC logic is implemented between the ports.
 
-✔ Internal BRAM is naturally multi-clock safe
+✔ Memory Coherency Model
 
-True Dual-Port BRAM hardware structures internally arbitrate read/write hazards and maintain coherence without additional CDC logic.
+This design assumes a True Dual-Port RAM primitive where:
 
-Thus, the module does NOT require async FIFO or synchronizers between the ports —
-the underlying memory fabric guarantees correctness.
+Each port has its own clock
 
-✔ Hazard resolution rules
+The memory hardware resolves internal read/write timing
 
-Write-After-Write (WAW) conflict on the same byte (same cycle)
+On FPGAs, this maps naturally to vendor-provided TDP BRAM blocks.
 
-Detect → raise SLVERR + simulation error message
+Important note:
+Cross-port read/write ordering is deterministic only within the guarantees provided by the underlying RAM primitive and the implemented forwarding logic (if enabled in simulation).
 
-Both sides receive valid BRESP
+✔ Hazard Handling Rules
+Condition	Handling
+Write-After-Write (same byte, same cycle)	Detected → SLVERR (simulation)
+Read-After-Write (cross-port)	Forwarded data returned (simulation)
+Starvation	Warning issued after configurable timeout
 
-Read-After-Write across ports (RAW, cross-domain)
+These checks are intended to catch system-level integration bugs early.
 
-Read returns newly written data immediately (forwarding)
+5. Design Assumptions
 
-Guarantees deterministic accelerator behavior
+This module assumes:
 
-Write starvation
+AXI masters follow the AXI4 protocol correctly
 
-If one port monopolizes access, starvation detector fires after N cycles
+Proper VALID/READY handshakes
 
-4. Assumptions
+Well-formed bursts (no malformed AxLEN)
 
-This BRAM assumes:
+WSTRB aligns with DATA_WIDTH
 
-AXI masters behave according to AXI4 protocol
+One AXI master per port
 
-AWVALID/WVALID handshake correctly
+Clock assumptions:
 
-No malformed bursting
+dma_clk and core_clk are stable
 
-WSTRB follows byte-aligned patterns
+No excessive jitter or glitching
 
-Only 1 AXI master per port
-(Each port is a slave interface; upstream arbitration must be done externally)
+6. Design Guarantees
 
-Clock domains are stable
-dma_clk and core_clk must be free from excessive jitter or glitching.
-
-FPGA / ASIC synthesis infers or maps memory correctly
-Most FPGA tools infer TDP BRAM automatically.
-
-5. Guarantees
 This module guarantees:
 
-Functionally correct dual-port shared-memory semantics
+Correct dual-port shared-memory semantics
 
-Deterministic read-after-write
+Independent AXI-MM operation per port
 
-Conflict detection and SLVERR reporting
+Deterministic behavior within the defined hazard rules
 
-No cross-domain metastability
+No explicit CDC paths between clock domains
 
-Synthesizable and timing-clean design
+Fully synthesizable RTL (excluding optional debug logic)
 
-6. Integration Guide
-6.1 Typical Integration with DMA + AI Core
-       DRAM                AXI-MM
-   +-----------+        +---------+
-   | AXI DMA   |------->|  Port 0 |
-   +-----------+        | (dma_clk)
-                        | BRAM IP |
-                        |         |-------> Accelerator Core
-                        |         |         (AXI-MM Port 1, core_clk)
-                        +---------+
+7. Integration Guide
+7.1 Typical DMA + Accelerator Integration
+       External DRAM
+           |
+       +-----------+
+       | AXI DMA   |
+       +-----------+
+              |
+              | AXI-MM (dma_clk)
+              v
+        +----------------+
+        |  Port 0        |
+        |  AXI BRAM IP   |
+        |                |
+        |                | AXI-MM (core_clk)
+        |                v
+        |         Accelerator Core
+        +----------------+
 
 Port 0 (dma_clk)
 
-Used where memory is filled or drained by:
+Typical usage:
 
-AXI DMA Engines
+DMA engines (MM2S / S2MM)
 
-CPU/SoC AXI Masters
-
-MM2S (Memory-to-Stream)
-
-S2MM (Stream-to-Memory)
+CPU or SoC AXI masters
 
 Port 1 (core_clk)
 
-Used by accelerator logic to:
+Typical usage:
 
-Read input feature maps
+Accelerator reads (inputs / weights)
 
-Read weight blocks
+Intermediate result storage
 
-Write intermediate results
+Partial accumulation buffers
 
-Possibly store partial accumulations
+7.2 Addressing Scheme
 
-6.2 Addressing Scheme
-BYTE ADDRESS = word address * (DATA_WIDTH/8)
-WORD INDEX   = ARADDR >> $clog2(DATA_WIDTH/8)
+AXI addresses are byte addresses
+
+Internal word index calculation:
+
+WORD_INDEX = AXI_ADDR >> $clog2(DATA_WIDTH / 8)
 
 
-Example (DATA_WIDTH=64):
+Example (DATA_WIDTH = 64):
 
-Address 0x20 → word index = 0x20 >> 3 = 0x4
+AXI Address = 0x20
+WORD_INDEX = 0x20 >> 3 = 0x4
 
-7. Error Conditions
+8. Error Conditions
 Condition	Detection	Response
-Write-Write same-byte same-cycle	yes	SLVERR + simulation error
-Bursts crossing memory boundary	optional	SLVERR
-Misaligned AXI address	optional	SLVERR
-Starvation (port monopolization)	yes	Warning in simulation
-8. Recommended Usage in AI/ML Subsystems
+Same-byte write conflict	Yes	SLVERR + sim error
+Burst crosses memory boundary	Optional	SLVERR
+Misaligned AXI address	Optional	SLVERR
+Port starvation	Yes	Simulation warning
+9. Recommended Use Cases
 
-This BRAM is ideal for:
+This BRAM is well suited for:
 
 Small tensor tiles
 
-Sliding-window storage
-
 Weight blocks
-
-Input activations
 
 Line buffers
 
-Intermediate partial sums
+Sliding-window storage
 
-DMA decoupling between SoC domain ↔ Core domain
+DMA ↔ Core clock decoupling
 
-Because it is:
+Common targets:
 
-dual-clock
+CNN / RNN / Transformer accelerators
 
-dual-port
-
-low-latency
-
-AXI-compatible
-
-It is directly usable in:
-
-CNN accelerators
-
-RNN/Transformer tile processors
-
-systolic arrays
+Systolic arrays
 
 MAC clusters
 
-9. Future Extensions
+10. Possible Future Extensions
 
-Possible enhancements:
+ECC / SECDED
 
-ECC (SECDED)
+Parity per byte
 
-Parity bits per byte
-
-AXI QoS aware arbitration
+AXI QoS or priority support
 
 Performance counters
 
-Prefetch buffer or burst-repacker
+Burst repacking / prefetch buffers
 
-10. License
+11. License
 
-MIT or proprietary internal (your choice)
+MIT License

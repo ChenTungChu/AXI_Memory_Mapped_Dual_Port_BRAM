@@ -1,5 +1,5 @@
 <certe_dump>
-  <instance type=" axi_mm_smoke_test "> 
+  <instance type=" axi_mm_directed_test "> 
      uvm_test_top 
   
      <instance type=" axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS) "> 

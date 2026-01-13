@@ -62,10 +62,10 @@ class axi_mm_seq_item #(
     // --------------------------
     function new(string name = "axi_mm_seq_item");
         super.new(name);
-        size  = $clog2(BYTES_PER_BEAT);
-        burst = 2'b01;
-        id    = '0;
-        len   = 8'd0;
+        size           = $clog2(BYTES_PER_BEAT);
+        burst          = 2'b01;
+        id             = '0;
+        len            = 8'd0;
     endfunction
 
     // --------------------------
@@ -81,13 +81,18 @@ class axi_mm_seq_item #(
     // --------------------------
     // Helper: Manual allocation (for non-randomized usage)
     // --------------------------
-    function void set_beats_len(int unsigned axi_len);
-        int unsigned beats = axi_len + 1;
-        this.len = axi_len;
+    function void set_beats_len();
+
+        int unsigned beats = len + 1;
+
         data_beats  = new[beats];
         wstrb_beats = new[beats];
         rdata_beats = new[beats];
         rresp_beats = new[beats];
+
+        foreach (wstrb_beats[i]) begin
+            wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+        end
     endfunction
 
     // --------------------------

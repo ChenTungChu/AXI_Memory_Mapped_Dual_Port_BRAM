@@ -1,234 +1,209 @@
-UVM Compile & Simulation Issue Log
+# UVM Compile & Simulation Issue Log
 
-紀錄本專案在建立 AXI-MM UVM 驗證環境時遇到的所有編譯錯誤、警告、語法問題與解決方法。
+- This log records the issues/errors/warnings I faced pre/during compilation or run stage, and how to resolve or fix the issues while building the UVM verification environment
 
-1. 多變數賦值語法錯誤
 
-原始寫法：
 
-writes_seen_p0 = writes_seen_p1 = 0;
-reads_seen_p0  = reads_seen_p1  = 0;
+## Dec-17-2025
 
+### Issus faced
 
-問題：
-SV 不允許連續使用 = 同時設多變數，會被解析成表達式 → 語法錯誤。
+1. **Multi-variable syntax errors**
 
-正確寫法：
+   - Original code:
 
-writes_seen_p0 = 0;
-writes_seen_p1 = 0;
-reads_seen_p0  = 0;
-reads_seen_p1  = 0;
+     ```systemverilog
+     writes_seen_p0 = writes_seen_p1 = 0;
+     reads_seen_p0  = reads_seen_p1  = 0;
+     ```
 
-2. print_field_int 找不到
+   - Issue:
 
-錯誤訊息：
+     - SystemVerilog does not allow the consecutive use of `=` to set multiple variables at once, as it will be parsed as an expression → Syntax error
 
-Could not find field/method name (print_field_int) in 'printer'
+   - Correct way:
 
+     ```
+     writes_seen_p0 = 0;
+     writes_seen_p1 = 0;
+     reads_seen_p0  = 0;
+     reads_seen_p1  = 0;
+     ```
 
-原因： 舊版 UVM (pre-1.2) 不支援 print_field_int()。
 
-解決方案：
 
-printer.print_field("addr", addr, $bits(addr), UVM_HEX);
+2. **Call task inside a function**
 
-3. function 內呼叫 task → Warning
+   - Warning:
 
-警告：
+     `(vlog-2239) Treating stand-alone use of presumed external function as an implicit VOID cast.`
 
-(vlog-2239) Treating stand-alone use of presumed external function as an implicit VOID cast.
+   - Reason:
 
+     - A function cannot contain time (or delay), nor can it call a task
 
-原因：
-function 不能含時間，也不能 call task。
+   - Solution:
 
-解法：
-把 function 改成 task，或改成 pure calculation function。
+     - Turn function into task, or change it to pure calculation function
 
-4. 巨集 WAIT_SIG 展開破壞語法
+       
 
-錯誤：
+3. **Syntax error due to WAIT_SIG macro expansion**
 
-near "begin": syntax error, unexpected begin
-near "++": syntax error, unexpected ++
+   - Error message:
 
+     ```	tcl
+     near "begin": syntax error, unexpected begin
+     near "++": syntax error, unexpected ++
+     ```
 
-原因：
-Macro 換行缺 \，導致展開成不完整的 SV 程式碼。
+   - Reason:
 
-5. task 不能 return
+     - The macro is missing a `\` at the line break, causing it to expand into incomplete SystemVerilog code
+       
 
-原本寫法：
+4. **Return value in task** 
 
-task automatic logic [DATA_WIDTH-1:0] compute_expected_beat_read(...);
+   - Original code:
 
+     `task automatic logic [DATA_WIDTH-1:0] compute_expected_beat_read(...);`
 
-錯誤：
+   - Error message:
 
-task does not allow return value
+     `task does not allow return value`
 
+   - Correct way:
 
-修正：
+     ```
+     task automatic compute_expected_beat_read(
+         ..., output logic [DATA_WIDTH-1:0] rdata);
+     ```
 
-task automatic compute_expected_beat_read(
-    ..., output logic [DATA_WIDTH-1:0] rdata);
+     
 
-6. 找不到 uvm_config_db
+5. **Unable to find `uvm_config_db`**
 
-錯誤：
+   - Error message:
 
-Undefined variable: 'uvm_config_db'
-near "#": syntax error
+     ```tcl
+     Undefined variable: 'uvm_config_db'
+     near "#": syntax error
+     ```
 
+   - Reason:
 
-原因：
-檔案沒 include UVM package。
+     - Files are not included in the UVM package
 
-解決：
+   - Solution:
 
-import uvm_pkg::*;
-`include "uvm_macros.svh"
+     ```systemverilog
+     import uvm_pkg::*;
+     `include "uvm_macros.svh"
+     ```
 
-7. axi_mm_pkg include 順序錯誤
+     
 
-錯誤：
+6. **`axi_mm_pkg` include order incorrect**
 
-Could not find class 'axi_mm_driver'
+   - Error message:
 
+     `Could not find class 'axi_mm_driver'`
 
-原因：
-package 中檔案 include 順序混亂。
+   - Reason:
 
-修正（正確順序）：
+     - The file include order within the package is incorrect
 
-seq_item
+   - Fix (Correct order):
 
-driver
+     - seq_item → driver → monitor → agent → env → test
 
-monitor
+     
 
-agent
+7. **clocking block + ref → Simulator warning**
 
-env
+   - Reason:
+     - Use clocking block ref (QuestaSim not recommended or not supported)
 
-test
+   - Fix:
+     - Use direct signals, for example: `@(posedge vif.aclk);`
+       
 
-8. clocking block + ref → simulator warning
+8. **virtual interface setup unsuccessful → Null handle**
 
-原因：
-使用 clocking block ref（Questa 視為不建議或不支援）。
+   - Error message:
 
-修正：
-改用直接訊號，例如：
+     `FATAL: Null virtual interface`
 
-@(posedge vif.aclk);
+   - Reason:
 
-9. virtual interface 沒設成功 → Null handle
+     - `config_db` path incorrect, like: `env.p0_agent`
 
-錯誤：
+     - Or missing driver/monitor hierarchy
 
-FATAL: Null virtual interface
+       
 
+9. `randomize()` inline constraint missing `with`
 
-原因：
-config_db 的 path 寫錯，例如：
+   - Error message:
 
-"env.p0_agent"
+     `syntax error, expecting ')'`
 
+   - Original code:
 
-或少 driver / monitor 層級。
+     ```systemverilog
+     req.randomize() {}
+     ```
 
-10. randomize inline constraint 漏掉 with
+   - Correct way:
 
-錯誤：
+     ```systemverilog
+     req.randomize() with {
+     };
+     ```
 
-syntax error, expecting ')'
 
 
-原因：
-寫成：
+10. **Monitor misuses clocking block event**
 
-req.randomize() {
+    - Original code:
 
+      ```systemverilog
+      @(posedge vif.cb_master)
+      ```
 
-正確：
+    - Reason:
 
-req.randomize() with {
-};
+      - Invalid syntax
 
-11. monitor 誤用 clocking block event
+    - Fix:
 
-錯誤：
+      ```
+      @(vif.cb_master);
+      ```
 
-@(posedge vif.cb_master)
+      or completely remove clocking block
 
 
-原因：
-不合法語法。
 
-修正：
+12. **Reset wait / handshake not allowed in functions**
+    - Reason:
+      - Time control inside a function (which requires calling a task) causes errors or warnings
+    - Solution:
+      - Move all such logic into a task
 
-@(vif.cb_master);
 
 
-或完全移除 clocking block。
+13. **Unclear behavior in burst default case**
+    - Issue:
+      - The `default` case is not handled, leading to incorrect override/decision logic
+    - Fix:
+      - Explicitly encode `burst = FIXED/INCR/WRAP`
 
-12. scoreboard function 呼叫 task → VOID cast warning
 
-再次出現 warning：
 
-implicit VOID cast
 
-
-解決：
-將所有 function 改為 task，或把 task 拆成 pure function。
-
-13. 重置等待 / handshake 於 function 中不允許
-
-錯誤：
-function 裡有時間控制（需要調用 task）會報錯或 warning。
-
-解決方案：
-全部移到 task。
-
-14. burst default case 行為不明確
-
-問題：
-default 沒處理，導致覆蓋判定錯誤。
-
-修正：
-明確編碼 burst=FIXED / INCR / WRAP。
-
-總結
-
-這些錯誤包含：
-
-UVM API 差異（舊版 UVM）
-
-SystemVerilog 語法誤解
-
-macro 展開陷阱
-
-function/task 使用規範
-
-package include 順序
-
-interface + clocking block 限制
-
-config_db path 層級錯誤
-
-seq / driver / monitor 典型 UVM 程式設計議題
-
-
-
-
-
-
-## 日期
-2025-12-20
-
-## 專案背景
+## Dec-20-2025
+### 專案背景
 - DUT: AXI-MM 雙埠 BRAM（dual-port RAM）  
 - 執行環境: UVM Smoke Test  
 - Port0: dma_clk domain  
@@ -241,7 +216,7 @@ seq / driver / monitor 典型 UVM 程式設計議題
 
 ### 1. Read Timeout 與 Write Timeout
 - 初始 smoke_test 設定：
-```text
+
 seq.num_transactions = 1
 seq.max_beats        = 1
 seq.read_percent     = 100
@@ -387,7 +362,7 @@ Smoke Test 流程
 
 **原因分析：**
 - 原始 driver 代碼：
-```systemverilog
+
 @(cb);
 wdata <= beat[i];
 wait(wready);
@@ -513,3 +488,118 @@ Driver 設計時要確保 WREADY 0 時不覆寫 wdata
 DUT WRITE FSM 必須允許連續 W beats，Memory Core 速度慢不應阻塞整個 burst
 
 AW/W 可以 fork/join，但 B channel 必須最後處理
+
+
+
+## 日期
+2026-01-01
+
+Faced issues:
+1. [Directed Test] Found out directed test only has one test case, proper test cases should be as follow:
+| Case | 名稱                | 驗證重點               |
+| ---- | ------------------- | --------------------- |
+| 0    | single-beat RAW     | 最小合法 write → read  |
+| 1    | multi-beat RAW      | burst 正確、WLAST      |
+| 2    | back-to-back write  | 無 bubble              |
+| 3    | overwrite same addr | 最後寫入勝出            |
+| 4    | partial write       | WSTRB 行為             |
+
+    - Currently testing Case 0, if no issue, will add more test cases accordingly 
+
+2. [Directed Test] UVM API call failed => Should use axi_mm_seq not axi_mm_seq_item
+    - Add directed_mode flag bit in seq_item
+
+Direct Test Case 0 test result:
+- AWLEN = 0 (single beat), BESOP = OKAY(0), no backpressure deadlock
+- Read data = Write data (0xdeadbeef12345678) => Correct
+- Single beat alignment                       => Correct
+- No X/Z corruption                           => Correct
+- Sequence/Test done normally
+- Summary:
+    - Correct UVM test flow (test -> sequence -> driver -> DUT -> monitor -> scoreboard)
+    - Verified RAW coherency
+    - Verified driver/DUT has no regression on single beat
+
+- Conclusion: Case 0 test PASSED
+
+Direct Test Case 1 test result (Attempt 1):
+-  Write burst 看起來是對的 => Driving WRITE addr=0x200 len=3 id=0x2
+-  但 scoreboard 完全沒有「任何一個 beat 被記為 written」
+   - Skip read compare: unwritten addr=0x200 beat=0
+   - Skip read compare: unwritten addr=0x208 beat=1
+   - Skip read compare: unwritten addr=0x210 beat=2
+   - Skip read compare: unwritten addr=0x218 beat=3
+   - 這代表一件非常明確的事：scoreboard 根本沒收到 / 沒建立任何 write model
+- READ done: beats=4 first beat=0xx
+  - 這行非常關鍵, 代表:
+    - read data 不是你預期的 pattern, 而是 X / 未定值
+    - 但 driver 仍然完成 transaction
+- Root cause: 
+  - directed_mode + multi-beat WRITE 時，axi_mm_seq 產生的 transaction「在語法上合法，但在 verification 語意上是不完整的」
+  - Problematic code:
+    - if (dir_rw == AXI_WRITE) begin
+        foreach (tr.data_beats[i]) begin
+            tr.data_beats[i]  = dir_wdata;
+            tr.wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+        end
+      end
+  - 沒有提供beat 對應的 address / identity 語意
+    - 結果:
+      - Monitor / scoreboard 無法判斷這是一組 coherent burst write
+      - Scoreboard 沒有建立 memory model
+      - 所有 read → Skip read compare
+      - DUT read data 變成 0xx（未定義或未寫入）
+  - 我現在的axi_mm_seq把 multi-beat burst 當成「重複 single-beat data」來看
+- Solution:
+  - tr.data_beats[i]  = dir_wdata + i;
+    tr.wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+  - 這使得:
+    - beat 0 → addr + 0 → data = base
+      beat 1 → addr + 8 → data = base + 1
+      beat 2 → addr + 16 → data = base + 2
+      beat 3 → addr + 24 → data = base + 3
+    - 這樣scoreboard 可以建立完整 memory map
+
+Direct Test Case 1 test result (Attempt 2):
+- 把sequence層修好了
+  - 因為Write完全成功
+    - sequence正確
+    - driver正確
+    - DUT回BREP=OKAY
+- 但是:
+  - Read 時 scoreboard完全沒記憶:
+    - Skip read compare: unwritten addr=0x200 beat=0
+    - Skip read compare: unwritten addr=0x208 beat=1
+    - Skip read compare: unwritten addr=0x210 beat=2
+    - Skip read compare: unwritten addr=0x218 beat=3
+  - 這100%證明:
+    - Scoreboard 的 memory model 裡，完全沒有收到任何 write beat
+- Root cause:
+  - Monitor 沒有正確把「寫入行為」送到 Scoreboard
+  - 我把 AW、W、B 當成「一定是嚴格連續、不會被打斷、不會 interleave」但 AXI 不保證這件事，即使在你目前的 DUT 也「剛好沒打斷」，monitor 仍然會 miss event。
+  - @125000 WRITE done
+  - @125000 DIRECTED WRITE
+  - @175000 READ
+  - @175000 SCB Skip read compare: unwritten addr=0x100
+    - Scoreboard 在收到 READ transaction 時還沒有收到對應的 WRITE transaction
+    - 也就是：
+      - Monitor 的 ap.write(tr) 發生得太晚 / 或根本沒送成功
+- Solution:
+  - Monitor monitor_write()必須修正:
+    - AW / W / B 必須完全解耦
+    - 可以同時存在多筆未完成 write transaction
+    - Scoreboard 一定能在 READ 之前看到 WRITE
+  - 在修正monitor_write()時也發現monitor_read()也要同時修正
+    - 原因是因為我當前monitor_read()有在AXI標準尚不成立的假設
+      - 假設 AR 之後，R 會連續回來
+      - 假設一次只會有一筆 outstanding read
+      - AR / R 沒有解耦
+      - 不支援 interleaving / backpressure
+      - READ 可能被 scoreboard 當成「unwritten」
+    - AXI4的規範是:
+      - AR / R 完全獨立
+      - 多筆 outstanding read 合法
+      - R 有 ID，可以 interleave
+  - 修該過程中發現:
+    - axi_mm_seq_item中沒有next_wbeat_idx和next_rbeat_idx這兩個變量
+      - 已增加

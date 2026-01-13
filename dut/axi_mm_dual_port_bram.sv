@@ -105,12 +105,19 @@ module axi_mm_dual_port_bram #(
     logic                     p0_aw_active;
 
     // local pending write beat (dma domain)
+    logic                     p0_local_wr_req;    // core domain local pending beat captured
+    logic [ADDR_WIDTH-1:0]    p0_local_wr_byte_addr;
+    logic [DATA_WIDTH-1:0]    p0_local_wr_wdata;
+    logic [BYTE_PER_WORD-1:0] p0_local_wr_wstrb;
+    logic [2:0]               p0_local_wr_size;
+    logic                     p0_local_wr_is_last;
     logic                     p0_wr_req;          // pending write beat (dma domain)
     logic [ADDR_WIDTH-1:0]    p0_wr_byte_addr;
     logic [DATA_WIDTH-1:0]    p0_wr_wdata;
     logic [BYTE_PER_WORD-1:0] p0_wr_wstrb;
     logic [2:0]               p0_wr_size;         // latched AW size for this beat
     logic                     p0_wr_is_last;
+    logic                     p0_w_active;
     int                       p0_wbeat_cnt;
     logic [IDW-1:0]           p0_bid;
     logic [1:0]               p0_bresp;
@@ -130,6 +137,38 @@ module axi_mm_dual_port_bram #(
     logic                     p0_rlast;
 
     // -------------------------
+    // Port0 -> Core handshake bridge (dma -> core)
+    // -------------------------
+    // DMA-side bridge registers (written in dma_clk)
+    logic [ADDR_WIDTH-1:0]    bridge_p0_addr_dma;
+    logic [DATA_WIDTH-1:0]    bridge_p0_wdata_dma;
+    logic [BYTE_PER_WORD-1:0] bridge_p0_wstrb_dma;
+    logic [2:0]               bridge_p0_size_dma;
+    logic                     bridge_p0_is_last_dma;
+    logic                     p0_req_toggle_dma; // toggles each time new bridge data is available
+
+    // Sync into core domain (double-flop)
+    logic p0_req_toggle_sync1_core, p0_req_toggle_sync2_core;
+    logic p0_req_toggle_last_seen_core;
+
+    // Staged copy in core domain (captured when toggle edge detected)
+    logic [ADDR_WIDTH-1:0]    staged_p0_addr_dma;
+    logic [DATA_WIDTH-1:0]    staged_p0_wdata_dma;
+    logic [BYTE_PER_WORD-1:0] staged_p0_wstrb_dma;
+    logic [2:0]               staged_p0_size_dma;
+    logic                     staged_p0_is_last_dma;
+    logic                     staged_p0_valid_dma; // indicates dma has a staged p1 beat to service
+
+    // Ack toggle from core back to dma
+    logic p0_ack_toggle_core;
+    logic p0_ack_toggle_sync1_dma, p0_ack_toggle_sync2_dma;
+    logic p0_ack_toggle_last_seen_dma;
+
+    // dma-side local flag that sees ack
+    logic p0_bridge_accepted_dma;
+
+
+    // -------------------------
     // Port1 (core domain) state
     // -------------------------
     logic [IDW-1:0]           p1_awid;
@@ -147,6 +186,7 @@ module axi_mm_dual_port_bram #(
     logic [2:0]               p1_local_wr_size;
     logic                     p1_local_wr_is_last;
     int                       p1_wbeat_cnt;
+    logic                     p1_w_active;
     logic [IDW-1:0]           p1_bid;
     logic [1:0]               p1_bresp;
     logic                     p1_bvalid;
@@ -202,14 +242,18 @@ module axi_mm_dual_port_bram #(
     logic [31:0] staged_p1_starve_cnt;
     logic        staged_p1_starve_asserted;
 
+
+
+    logic p1_w_hs;
+    assign p1_w_hs = axi1_if.wvalid && axi1_if.wready;
+    assign axi1_if.wready = p1_w_active && !p1_local_wr_req;
     // -------------------------
-    // Core-side FSM + bridge (core_clk domain)
+    // Port1 FSM (core domain) - AW/W capture + bridge handshake
     // -------------------------
     always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
-            // reset core-side interface outputs/state
+            // reset core-side outputs/state
             axi1_if.awready <= 1'b1;
-            axi1_if.wready  <= 1'b0;
             axi1_if.bvalid  <= 1'b0;
             axi1_if.bresp   <= 2'b00;
             axi1_if.bid     <= '0;
@@ -221,6 +265,7 @@ module axi_mm_dual_port_bram #(
             axi1_if.rlast   <= 1'b0;
 
             p1_aw_active    <= 1'b0;
+            p1_w_active     <= 1'b0;
             p1_wbeat_cnt    <= 0;
             p1_local_wr_req <= 1'b0;
             p1_bvalid       <= 1'b0;
@@ -242,169 +287,135 @@ module axi_mm_dual_port_bram #(
             p1_ack_toggle_last_seen_core <= 1'b0;
             p1_bridge_accepted_core      <= 1'b0;
         end else begin
-            // ---- AW capture (Port1) ----
+            // -------------------------
+            // AW capture (Port1)
+            // -------------------------
             if (axi1_if.awready && axi1_if.awvalid) begin
-                p1_awid         <= axi1_if.awid;
-                p1_awaddr       <= axi1_if.awaddr;
-                p1_awlen        <= axi1_if.awlen;
-                p1_awsize       <= axi1_if.awsize;
-                p1_awburst      <= axi1_if.awburst;
-                p1_aw_active    <= 1'b1;
-                p1_wbeat_cnt    <= 0;
-                axi1_if.wready  <= 1'b1;
+                p1_awid      <= axi1_if.awid;
+                p1_awaddr    <= axi1_if.awaddr;
+                p1_awlen     <= axi1_if.awlen;
+                p1_awsize    <= axi1_if.awsize;
+                p1_awburst   <= axi1_if.awburst;
+                p1_aw_active <= 1'b1;
+                p1_w_active  <= 1'b1;
+                p1_wbeat_cnt <= 0;
                 axi1_if.awready <= 1'b0;
 
-                // sim-time check: AW size must be within lane width (i.e. <= BYTE_PER_WORD)
                 `ifndef SYNTHESIS
-                    // max allowed size_field is clog2(BYTE_PER_WORD)
                     if (p1_awsize > $clog2(BYTE_PER_WORD)) begin
-                        $error("%0t: [axi_mm_dual_port_bram] p1 AW size (%0d) > max (%0d).", $time, p1_awsize, $clog2(BYTE_PER_WORD));
+                        $error("%0t: [axi_mm_dual_port_bram] p1 AW size (%0d) > max (%0d).", 
+                            $time, p1_awsize, $clog2(BYTE_PER_WORD));
                     end
                 `endif
             end
 
-            // ---- W beat capture (Port1) into local pending buffer ----
-            if (p1_aw_active) begin
-                if (axi1_if.wvalid && axi1_if.wready) begin
-                    logic is_last_now;
-                    logic [ADDR_WIDTH-1:0] beat_addr;
-                    is_last_now = axi1_if.wlast || (p1_wbeat_cnt == p1_awlen);
+            // -------------------------
+            // W beat capture
+            // -------------------------
+            if (p1_aw_active && p1_w_hs) begin
+                logic [ADDR_WIDTH-1:0] beat_addr;
 
-                    if (p1_awburst == 2'b10) beat_addr = compute_wrap_addr(p1_awaddr, p1_awsize, p1_awlen, p1_wbeat_cnt);
-                    else if (p1_awburst == 2'b01) beat_addr = compute_incr_addr(p1_awaddr, p1_awsize, p1_wbeat_cnt);
-                    else beat_addr = p1_awaddr;
+                if      (p1_awburst == 2'b10) beat_addr = compute_wrap_addr(p1_awaddr, p1_awsize, p1_awlen, p1_wbeat_cnt);
+                else if (p1_awburst == 2'b01) beat_addr = compute_incr_addr(p1_awaddr, p1_awsize, p1_wbeat_cnt);
+                else                          beat_addr = p1_awaddr;
 
-                    // latch locally in core domain and mark local pending
-                    p1_local_wr_byte_addr <= beat_addr;
-                    p1_local_wr_wdata     <= axi1_if.wdata;
-                    p1_local_wr_wstrb     <= axi1_if.wstrb;
-                    p1_local_wr_size      <= p1_awsize;  // latch awsize here
-                    p1_local_wr_is_last   <= is_last_now;
-                    p1_local_wr_req       <= 1'b1;
-                    p1_wbeat_cnt          <= p1_wbeat_cnt + 1;
+                // latch locally
+                p1_local_wr_byte_addr <= beat_addr;
+                p1_local_wr_wdata     <= axi1_if.wdata;
+                p1_local_wr_wstrb     <= axi1_if.wstrb;
+                p1_local_wr_size      <= p1_awsize;
+                p1_local_wr_is_last   <= axi1_if.wlast;
+                p1_local_wr_req       <= 1'b1;
+                p1_wbeat_cnt          <= p1_wbeat_cnt + 1;
 
-                    if (is_last_now) begin
-                        p1_bid    <= p1_awid;
-                        p1_bresp  <= 2'b00;
-                        p1_bvalid <= 1'b1;
-                        p1_aw_active <= 1'b0;
-                    end
-
-                    `ifndef SYNTHESIS
-                        // sim checks: wstrb shouldn't be all zero for a valid write beat
-                        if (axi1_if.wstrb == '0) begin
-                            $error("%0t: [axi_mm_dual_port_bram] p1 write beat with zero WSTRB at addr 0x%0h", $time, beat_addr);
-                        end
-                    `endif
-                end
-
-                axi1_if.wready <= 1'b1;
-            end
-            else begin
-                axi1_if.wready <= 1'b0;
+                p1_w_active <= 1'b0;
             end
 
-            // B channel drive (core domain only)
-            if (p1_bvalid) begin
-                axi1_if.bvalid <= 1'b1;
-                axi1_if.bresp  <= p1_bresp;
-                axi1_if.bid    <= p1_bid;
-                if (axi1_if.bready) begin
-                    p1_bvalid       <= 1'b0;
-                    axi1_if.bvalid  <= 1'b0;
-                    axi1_if.awready <= 1'b1;
+            // -------------------------
+            // Bridge handshake (core side)
+            // -------------------------
+            p1_ack_toggle_sync1_core <= p1_ack_toggle_dma;
+            p1_ack_toggle_sync2_core <= p1_ack_toggle_sync1_core;
+
+            if (p1_local_wr_req && (p1_req_toggle_core == p1_ack_toggle_sync2_core)) begin
+                bridge_p1_addr_core    <= p1_local_wr_byte_addr;
+                bridge_p1_wdata_core  <= p1_local_wr_wdata;
+                bridge_p1_wstrb_core   <= p1_local_wr_wstrb;
+                bridge_p1_is_last_core <= p1_local_wr_is_last;
+                bridge_p1_size_core    <= p1_local_wr_size;
+
+                // toggle request to indicate new data
+                p1_req_toggle_core     <= ~p1_req_toggle_core;
+
+                // clear local request only when bridge has accepted it
+                p1_local_wr_req       <= 1'b0;
+
+                // prepare B channel if last beat
+                if (p1_local_wr_is_last) begin
+                    p1_bid       <= p1_awid;
+                    p1_bresp     <= 2'b00;
+                    p1_bvalid    <= 1'b1;
+                    p1_aw_active <= 1'b0;
                 end
-            end else axi1_if.bvalid <= 1'b0;
+            end
 
-            if (!p1_aw_active) axi1_if.wready <= 1'b0;
+            // -------------------------
+            // B channel
+            // -------------------------
+            axi1_if.bvalid <= p1_bvalid;
+            axi1_if.bresp  <= p1_bresp;
+            axi1_if.bid    <= p1_bid;
+            if (p1_bvalid && axi1_if.bready) begin
+                p1_bvalid       <= 1'b0;
+                axi1_if.awready <= 1'b1;
+            end
 
-            // AR / read capture (core domain)
+            // -------------------------
+            // AR/R channel (unchanged)
+            // -------------------------
             if (axi1_if.arready && axi1_if.arvalid) begin
-                p1_arid         <= axi1_if.arid;
-                p1_araddr       <= axi1_if.araddr;
-                p1_arlen        <= axi1_if.arlen;
-                p1_arsize       <= axi1_if.arsize;
-                p1_arburst      <= axi1_if.arburst;
-                p1_ar_active    <= 1'b1;
-                p1_rbeat_cnt    <= 0;
+                p1_arid      <= axi1_if.arid;
+                p1_araddr    <= axi1_if.araddr;
+                p1_arlen     <= axi1_if.arlen;
+                p1_arsize    <= axi1_if.arsize;
+                p1_arburst   <= axi1_if.arburst;
+                p1_ar_active <= 1'b1;
+                p1_rbeat_cnt <= 0;
                 axi1_if.arready <= 1'b0;
             end
 
             if (p1_ar_active && !p1_rvalid) begin
-                automatic logic [ADDR_WIDTH-1:0] beat_addr;
-                automatic logic [ADDR_IDX_W-1:0] aligned_byte;
-
+                logic [ADDR_WIDTH-1:0] beat_addr;
                 p1_rid    <= p1_arid;
                 p1_rvalid <= 1'b1;
                 p1_rlast  <= (p1_rbeat_cnt == p1_arlen);
 
-                // Calculate beat addrress
                 if      (p1_arburst == 2'b10) beat_addr = compute_wrap_addr(p1_araddr,p1_arsize,p1_arlen,p1_rbeat_cnt);
                 else if (p1_arburst == 2'b01) beat_addr = compute_incr_addr(p1_araddr,p1_arsize,p1_rbeat_cnt);
                 else                          beat_addr = p1_araddr;
 
-                aligned_byte = byte_index( beat_addr - (beat_addr % BYTE_PER_WORD) );
-
-                for (int i=0;i<BYTE_PER_WORD;i++) begin
-                    p1_rdata[8*i +:8] <= mem_byte[ aligned_byte + i ];
-                end
+                for (int i=0;i<BYTE_PER_WORD;i++)
+                    p1_rdata[8*i +:8] <= mem_byte[beat_addr + i];
             end
-            
-            // Output R channel
+
             axi1_if.rvalid <= p1_rvalid;
             axi1_if.rdata  <= p1_rdata;
             axi1_if.rresp  <= 2'b00;
             axi1_if.rid    <= p1_rid;
             axi1_if.rlast  <= p1_rlast;
 
-            // RREADY handshake
             if (p1_rvalid && axi1_if.rready) begin
                 p1_rvalid <= 1'b0;
                 if (p1_rlast) begin
                     p1_ar_active <= 1'b0;
                     axi1_if.arready <= 1'b1;
-                end
-                else begin
+                end else begin
                     p1_rbeat_cnt <= p1_rbeat_cnt + 1;
                 end
             end
-
-            // -------------------------
-            // Bridge handshake logic (core side)
-            // - prepare bridge when local pending and previous request accepted
-            // - use toggles for handshake
-            // -------------------------
-            // synchronize ack toggle back into core domain
-            p1_ack_toggle_sync1_core <= p1_ack_toggle_dma;
-            p1_ack_toggle_sync2_core <= p1_ack_toggle_sync1_core;
-
-            // detect ack edge in core domain
-            if (p1_ack_toggle_sync2_core != p1_ack_toggle_last_seen_core) begin
-                p1_ack_toggle_last_seen_core <= p1_ack_toggle_sync2_core;
-                p1_bridge_accepted_core      <= 1'b1;
-            end else begin
-                p1_bridge_accepted_core      <= 1'b0;
-            end
-
-            // if we have a local pending beat and bridge is free, present data on bridge and toggle req.
-            // require that previous request was accepted (i.e., last_seen matches ack_sync)
-            if (p1_local_wr_req && !p1_bridge_accepted_core && (p1_req_toggle_core == p1_ack_toggle_sync2_core)) begin
-                bridge_p1_addr_core    <= p1_local_wr_byte_addr;
-                bridge_p1_wdata_core   <= p1_local_wr_wdata;
-                bridge_p1_wstrb_core   <= p1_local_wr_wstrb;
-                bridge_p1_is_last_core <= p1_local_wr_is_last;
-                bridge_p1_size_core    <= p1_local_wr_size;
-                // toggle request to indicate new data
-                p1_req_toggle_core     <= ~p1_req_toggle_core;
-            end
-
-            // when ack observed, clear local pending (core can accept next beat)
-            if (p1_bridge_accepted_core) begin
-                p1_local_wr_req <= 1'b0;
-                if (p1_aw_active) axi1_if.wready <= 1'b1;
-            end
         end
-    end // always_ff core-side FSM + bridge
+    end
+
 
     // -------------------------
     // Synchronize p1_req_toggle into dma domain and capture bridge into staged registers
@@ -458,14 +469,16 @@ module axi_mm_dual_port_bram #(
         end
     end
 
+    logic p0_w_hs;
+    assign p0_w_hs = axi0_if.wvalid && axi0_if.wready;
+
     // -------------------------
-    // Port0 FSM (dma domain) - AW/W/AR/R capture and staging
+    // Port0 FSM (dma domain) - AW/W capture + bridge handshake
     // -------------------------
     always_ff @(posedge dma_clk or negedge dma_rst_n) begin
         if (!dma_rst_n) begin
-            // reset dma-side outputs / state
+            // reset dma-side interface outputs/state
             axi0_if.awready <= 1'b1;
-            axi0_if.wready  <= 1'b0;
             axi0_if.bvalid  <= 1'b0;
             axi0_if.bresp   <= 2'b00;
             axi0_if.bid     <= '0;
@@ -477,141 +490,167 @@ module axi_mm_dual_port_bram #(
             axi0_if.rlast   <= 1'b0;
 
             p0_aw_active    <= 1'b0;
+            p0_w_active     <= 1'b0;
             p0_wbeat_cnt    <= 0;
-            p0_wr_req       <= 1'b0;
+            p0_local_wr_req <= 1'b0;
             p0_bvalid       <= 1'b0;
 
             p0_ar_active    <= 1'b0;
             p0_rbeat_cnt    <= 0;
             p0_rvalid       <= 1'b0;
             p0_rlast        <= 1'b0;
-            p0_wr_size      <= '0;
-        end else begin
-            // AW capture
-            if (axi0_if.awready && axi0_if.awvalid) begin
-                p0_awid         <= axi0_if.awid;
-                p0_awaddr       <= axi0_if.awaddr;
-                p0_awlen        <= axi0_if.awlen;
-                p0_awsize       <= axi0_if.awsize;
-                p0_awburst      <= axi0_if.awburst;
-                p0_aw_active    <= 1'b1;
-                p0_wbeat_cnt    <= 0;
 
+            // bridge
+            bridge_p0_addr_dma          <= '0;
+            bridge_p0_wdata_dma         <= '0;
+            bridge_p0_wstrb_dma         <= '0;
+            bridge_p0_is_last_dma       <= 1'b0;
+            bridge_p0_size_dma          <= '0;
+            p0_req_toggle_dma           <= 1'b0;
+            p0_ack_toggle_sync1_dma     <= 1'b0;
+            p0_ack_toggle_sync2_dma     <= 1'b0;
+            p0_ack_toggle_last_seen_dma <= 1'b0;
+            p0_bridge_accepted_dma      <= 1'b0;
+        end else begin
+            // -------------------------
+            // AW capture (Port0)
+            // -------------------------
+            if (axi0_if.awready && axi0_if.awvalid) begin
+                p0_awid      <= axi0_if.awid;
+                p0_awaddr    <= axi0_if.awaddr;
+                p0_awlen     <= axi0_if.awlen;
+                p0_awsize    <= axi0_if.awsize;
+                p0_awburst   <= axi0_if.awburst;
+                p0_aw_active <= 1'b1;
+                p0_wbeat_cnt <= 0;
                 axi0_if.awready <= 1'b0;
-                axi0_if.wready  <= 1'b1;
 
                 `ifndef SYNTHESIS
                     if (p0_awsize > $clog2(BYTE_PER_WORD)) begin
-                        $error("%0t: [axi_mm_dual_port_bram] p0 AW size (%0d) > max (%0d).", $time, p0_awsize, $clog2(BYTE_PER_WORD));
+                        $error("%0t: [axi_mm_dual_port_bram] p0 AW size (%0d) > max (%0d).", 
+                            $time, p0_awsize, $clog2(BYTE_PER_WORD));
                     end
                 `endif
             end
 
-            // W beat accept (dma domain)
-            if (p0_aw_active) begin
-                if (axi0_if.wvalid && axi0_if.wready) begin
-                    logic is_last_now;
-                    logic [ADDR_WIDTH-1:0] beat_addr;
-                    is_last_now = axi0_if.wlast || (p0_wbeat_cnt == p0_awlen);
+            // -------------------------
+            // W beat capture
+            // -------------------------
+            if (p0_aw_active && axi0_if.wvalid) begin
+                logic [ADDR_WIDTH-1:0] beat_addr;
 
-                    if      (p0_awburst == 2'b10) beat_addr = compute_wrap_addr(p0_awaddr, p0_awsize, p0_awlen, p0_wbeat_cnt);
-                    else if (p0_awburst == 2'b01) beat_addr = compute_incr_addr(p0_awaddr, p0_awsize, p0_wbeat_cnt);
-                    else                          beat_addr = p0_awaddr;
+                if      (p0_awburst == 2'b10) beat_addr = compute_wrap_addr(p0_awaddr, p0_awsize, p0_awlen, p0_wbeat_cnt);
+                else if (p0_awburst == 2'b01) beat_addr = compute_incr_addr(p0_awaddr, p0_awsize, p0_wbeat_cnt);
+                else                          beat_addr = p0_awaddr;
 
-                    // latch write beat into dma-side pending buffer (visible to Memory Core)
-                    p0_wr_byte_addr <= beat_addr;
-                    p0_wr_wdata     <= axi0_if.wdata;
-                    p0_wr_wstrb     <= axi0_if.wstrb;
-                    p0_wr_size      <= p0_awsize;   // latch awsize into pending buffer
-                    p0_wr_is_last   <= is_last_now;
-                    p0_wr_req       <= 1'b1;
-                    p0_wbeat_cnt    <= p0_wbeat_cnt + 1;
+                // latch locally
+                p0_local_wr_byte_addr <= beat_addr;
+                p0_local_wr_wdata     <= axi0_if.wdata;
+                p0_local_wr_wstrb     <= axi0_if.wstrb;
+                p0_local_wr_size      <= p0_awsize;
+                p0_local_wr_is_last   <= axi0_if.wlast;
+                p0_local_wr_req       <= 1'b1;  // request bridge transfer
+                p0_wbeat_cnt          <= p0_wbeat_cnt + 1;
 
-                    // B channel
-                    if (is_last_now) begin
-                        p0_bid       <= p0_awid;
-                        p0_bresp     <= 2'b00;
-                        p0_bvalid    <= 1'b1;
-                        p0_aw_active <= 1'b0;
-                    end
-
-                    `ifndef SYNTHESIS
-                        if (axi0_if.wstrb == '0) begin
-                            $error("%0t: [axi_mm_dual_port_bram] p0 write beat with zero WSTRB at addr 0x%0h", $time, beat_addr);
-                        end
-                    `endif
+                if (axi0_if.wlast) begin
+                    p0_bid    <= p0_awid;
+                    p0_bresp  <= 2'b00;
+                    p0_bvalid <= 1'b1;
+                    p0_aw_active <= 1'b0;
                 end
-
-                // take W ready low until Memory Core consumes p0_wr_req
-                axi0_if.wready <= 1'b1;
-            end
-            else begin
-                axi0_if.wready <= 1'b0;
             end
 
-            // B channel drive (dma domain)
-            if (p0_bvalid) begin
-                axi0_if.bvalid <= 1'b1;
-                axi0_if.bresp  <= p0_bresp;
-                axi0_if.bid    <= p0_bid;
-                if (axi0_if.bready) begin
-                    p0_bvalid       <= 1'b0;
-                    axi0_if.bvalid  <= 1'b0;
-                    axi0_if.awready <= 1'b1;  // Next AW can start
-                end
-            end else axi0_if.bvalid <= 1'b0;
+            // -------------------------
+            // Bridge handshake (dma side)
+            // -------------------------
+            // sync ack toggle from core domain
+            // p0_ack_toggle_sync1_dma <= p0_ack_toggle_core;
+            // p0_ack_toggle_sync2_dma <= p0_ack_toggle_sync1_dma;
 
-            // AR / read capture (dma domain)
+            // // detect ack edge
+            // if (p0_local_wr_req) begin
+            //     // notify Memory Core**
+            //     p0_wr_req             <= 1'b1;
+            //     p0_wr_byte_addr       <= p0_local_wr_byte_addr;
+            //     p0_wr_wdata           <= p0_local_wr_wdata;
+            //     p0_wr_wstrb           <= p0_local_wr_wstrb;
+            //     p0_wr_size            <= p0_local_wr_size;
+            //     p0_wr_is_last         <= p0_local_wr_is_last;
+
+
+            //     // toggle request to indicate new data
+            //     p0_req_toggle_dma     <= ~p0_req_toggle_dma;
+
+            //     // clear local request only when bridge has accepted it
+            //     p0_local_wr_req       <= 1'b0;
+
+            //     // prepare B channel if last beat
+            //     if (p0_local_wr_is_last) begin
+            //         p0_bid       <= p0_awid;
+            //         p0_bresp     <= 2'b00;
+            //         p0_bvalid    <= 1'b1;
+            //         p0_aw_active <= 1'b0;
+            //     end
+            // end
+
+            // -------------------------
+            // B channel
+            // -------------------------
+            axi0_if.bvalid <= p0_bvalid;
+            axi0_if.bresp  <= p0_bresp;
+            axi0_if.bid    <= p0_bid;
+            if (p0_bvalid && axi0_if.bready) begin
+                p0_bvalid       <= 1'b0;
+                axi0_if.awready <= 1'b1; // allow next AW
+            end
+
+            // -------------------------
+            // AR/R channel (unchanged)
+            // -------------------------
             if (axi0_if.arready && axi0_if.arvalid) begin
-                p0_arid         <= axi0_if.arid;
-                p0_araddr       <= axi0_if.araddr;
-                p0_arlen        <= axi0_if.arlen;
-                p0_arsize       <= axi0_if.arsize;
-                p0_arburst      <= axi0_if.arburst;
-                p0_ar_active    <= 1'b1;
-                p0_rbeat_cnt    <= 0;
+                p0_arid      <= axi0_if.arid;
+                p0_araddr    <= axi0_if.araddr;
+                p0_arlen     <= axi0_if.arlen;
+                p0_arsize    <= axi0_if.arsize;
+                p0_arburst   <= axi0_if.arburst;
+                p0_ar_active <= 1'b1;
+                p0_rbeat_cnt <= 0;
                 axi0_if.arready <= 1'b0;
             end
 
-            // prepare rdata (assembly handled separately)
             if (p0_ar_active && !p0_rvalid) begin
-                automatic logic [ADDR_WIDTH-1:0] beat_addr;
-
+                logic [ADDR_WIDTH-1:0] beat_addr;
                 p0_rid    <= p0_arid;
                 p0_rvalid <= 1'b1;
                 p0_rlast  <= (p0_rbeat_cnt == p0_arlen);
 
-                // Calculate beat address
-                if      (p0_arburst == 2'b10) beat_addr = compute_wrap_addr(p0_araddr, p0_arsize, p0_arlen, p0_rbeat_cnt);
-                else if (p0_arburst == 2'b01) beat_addr = compute_incr_addr(p0_araddr, p0_arsize, p0_rbeat_cnt);
-                else                          beat_addr = p0_araddr;
+                if      (p0_arburst == 2'b10) beat_addr = compute_wrap_addr(p0_araddr,p0_arsize,p0_arlen,p0_rbeat_cnt);
+                else if (p0_arburst == 2'b01) beat_addr = compute_incr_addr(p0_araddr,p0_arsize,p0_rbeat_cnt);
+                else                           beat_addr = p0_araddr;
 
-                // latch memory content
-                for (int i=0; i<BYTE_PER_WORD; i++) begin
-                    p0_rdata[8*i +:8] <= mem_byte[ beat_addr + i ];
-                end
+                for (int i=0;i<BYTE_PER_WORD;i++)
+                    p0_rdata[8*i +:8] <= mem_byte[beat_addr + i];
             end
 
-            // Output R channel
             axi0_if.rvalid <= p0_rvalid;
             axi0_if.rdata  <= p0_rdata;
             axi0_if.rresp  <= 2'b00;
             axi0_if.rid    <= p0_rid;
             axi0_if.rlast  <= p0_rlast;
 
-            // RREADY handshake
             if (p0_rvalid && axi0_if.rready) begin
                 p0_rvalid <= 1'b0;
                 if (p0_rlast) begin
                     p0_ar_active <= 1'b0;
                     axi0_if.arready <= 1'b1;
-                end 
-                else begin
+                end else begin
                     p0_rbeat_cnt <= p0_rbeat_cnt + 1;
                 end
             end
+
         end
-    end // always_ff p0 FSM
+    end
+
 
     // -------------------------
     // Read data assembly (NO forwarding)
@@ -721,11 +760,11 @@ module axi_mm_dual_port_bram #(
 
                 // consume p0 request and re-enable its WREADY
                 p0_wr_req <= 1'b0;
-                if (p0_aw_active) axi0_if.wready <= 1'b1;
-                if (p0_wr_is_last) begin
-                    p0_aw_active    <= 1'b0;
-                    axi0_if.awready <= 1'b1;
-                end
+                // // if (p0_aw_active) axi0_if.wready <= 1'b1;
+                // if (p0_wr_is_last) begin
+                //     p0_aw_active    <= 1'b0;
+                //     // axi0_if.awready <= 1'b1;
+                // end
 
                 // starvation handling: p0 took this cycle -> if staged exists, this counts as one starve tick
                 if (staged_p1_valid_dma) begin
