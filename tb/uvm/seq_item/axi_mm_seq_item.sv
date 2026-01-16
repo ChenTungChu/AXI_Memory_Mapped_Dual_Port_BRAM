@@ -81,14 +81,19 @@ class axi_mm_seq_item #(
     // --------------------------
     // Helper: Manual allocation (for non-randomized usage)
     // --------------------------
-    function void set_beats_len();
+    function void set_beats_len(int len);
 
-        int unsigned beats = len + 1;
+        assert (len >= 0)
+        else `uvm_fatal("SEQ_ITEM", "len < 0 in set_beats_len");
 
-        data_beats  = new[beats];
-        wstrb_beats = new[beats];
-        rdata_beats = new[beats];
-        rresp_beats = new[beats];
+        data_beats  = new[len + 1];
+        wstrb_beats = new[len + 1];
+        rdata_beats = new[len + 1];
+        rresp_beats = new[len + 1];
+
+        foreach (data_beats[i]) begin
+            data_beats[i] = '0;
+        end
 
         foreach (wstrb_beats[i]) begin
             wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
@@ -117,19 +122,32 @@ class axi_mm_seq_item #(
     virtual function void do_copy(uvm_object rhs);
         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rhs_;
         if (!$cast(rhs_, rhs)) return;
+
         super.do_copy(rhs);
+
         this.rw          = rhs_.rw;
         this.addr        = rhs_.addr;
         this.id          = rhs_.id;
         this.len         = rhs_.len;
         this.size        = rhs_.size;
         this.burst       = rhs_.burst;
-        this.data_beats  = rhs_.data_beats;
-        this.wstrb_beats = rhs_.wstrb_beats;
-        this.rdata_beats = rhs_.rdata_beats;
-        this.rresp_beats = rhs_.rresp_beats;
         this.bresp       = rhs_.bresp;
         this.comment     = rhs_.comment;
+
+        // Deep copy dynamic arrays
+        this.data_beats  = new[rhs_.data_beats.size()];
+        this.wstrb_beats = new[rhs_.wstrb_beats.size()];
+        foreach (this.data_beats[i]) begin
+            this.data_beats[i]  = rhs_.data_beats[i];
+            this.wstrb_beats[i] = rhs_.wstrb_beats[i];
+        end
+
+        this.rdata_beats = new[rhs_.rdata_beats.size()];
+        this.rresp_beats = new[rhs_.rresp_beats.size()];
+        foreach (this.rdata_beats[i]) begin
+            this.rdata_beats[i] = rhs_.rdata_beats[i];
+            this.rresp_beats[i] = rhs_.rresp_beats[i];
+        end
     endfunction
 
     virtual function bit do_compare(uvm_object rhs, uvm_comparer comparer = null);

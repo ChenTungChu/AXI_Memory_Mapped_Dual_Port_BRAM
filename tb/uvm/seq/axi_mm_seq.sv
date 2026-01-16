@@ -34,15 +34,16 @@ class axi_mm_seq #(
     }
 
     // ============================================================
-    // DIRECTED MODE knobs (NEW)
+    // DIRECTED MODE knobs
     // ============================================================
     bit                     directed_mode = 0;
-
     axi_rw_e                dir_rw;
     logic [ADDR_WIDTH-1:0]  dir_addr;
     logic [DATA_WIDTH-1:0]  dir_wdata;
     int unsigned            dir_beats = 1;
     logic [ID_WIDTH-1:0]    dir_id;
+    logic [1:0]             dir_burst = 2'b01; // INCR
+    logic [2:0]             dir_size  = $clog2(BYTES_PER_BEAT);
 
     localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
 
@@ -89,19 +90,24 @@ class axi_mm_seq #(
         if (directed_mode) begin
             tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("tr");
 
-            start_item(tr);
-
             // AXI fields
             tr.rw    = dir_rw;
             tr.addr  = dir_addr;
             tr.len   = dir_beats - 1;
             tr.id    = dir_id;
-            tr.size  = $clog2(BYTES_PER_BEAT);
-            tr.burst = 2'b01; // INCR
+
+            // For Case 1
+            // tr.size  = $clog2(BYTES_PER_BEAT);
+            // tr.burst = 2'b01;
+
+            // For Case 2
+            tr.size  = dir_size;
+            tr.burst = dir_burst; 
 
             // Allocate payload arrays
-            // tr.set_beats_len(tr.len);
-            tr.set_beats_len();
+            tr.set_beats_len(tr.len);
+
+            // `uvm_info("SEQ_DBG", $sformatf("dir_wdata = 0x%0h", dir_wdata), UVM_LOW)
 
             // Write payload
             if (dir_rw == AXI_WRITE) begin
@@ -111,10 +117,12 @@ class axi_mm_seq #(
                 end
             end
 
+            start_item(tr);
             finish_item(tr);
 
-            `uvm_info(get_type_name(), $sformatf("DIRECTED %s addr=0x%0h beats=%0d id=0x%0h", (dir_rw == AXI_WRITE) ? "WRITE" : "READ", dir_addr, dir_beats, dir_id), UVM_MEDIUM)
-            
+            // `uvm_info(get_type_name(), $sformatf("DIRECTED %s addr=0x%0h beats=%0d id=0x%0h", (dir_rw == AXI_WRITE) ? "WRITE" : "READ", dir_addr, dir_beats, dir_id), UVM_MEDIUM)
+            `uvm_info(get_type_name(), $sformatf("DIRECTED %s addr=0x%0h beats=%0d id=0x%0h burst=%0b size=%0d", (dir_rw == AXI_WRITE) ? "WRITE" : "READ", dir_addr, dir_beats, dir_id, dir_burst, dir_size), UVM_MEDIUM)
+
             return;
         end
 
@@ -144,8 +152,7 @@ class axi_mm_seq #(
             beats  = max_beats;
             tr.len = beats - 1;
 
-            // tr.set_beats_len(tr.len);
-            tr.set_beats_len();
+            tr.set_beats_len(tr.len);
 
 
             // Address

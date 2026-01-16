@@ -459,7 +459,7 @@ Scoreboard 設計正確跳過尚未寫入的 beat
 
 查看模擬 log num_transactions=4, max_beats=4, read%=50
 
-確認交易完成，scoreboard 無錯誤，標記 ✅
+確認交易完成，scoreboard 無錯誤，標記 
 
 5️⃣ 多 step 並行追蹤
 問題：
@@ -603,3 +603,239 @@ Direct Test Case 1 test result (Attempt 2):
   - 修該過程中發現:
     - axi_mm_seq_item中沒有next_wbeat_idx和next_rbeat_idx這兩個變量
       - 已增加
+	  
+	  
+  
+## 日期
+2026-01-12
+
+Faced issues:
+1. 和之前一樣, DUT在`len = 0`(single-beat write)時, `WREADY`沒有在最後一拍正確拉低, 導致同一筆W beat被monitor看到"handshake twice"
+	- This means there is logical bug on W channel FSM in DUT
+	- AXI規則:
+		- W beat 計數是由 `WVALID && WREADY` 決定
+			- 不是看資料有沒有變
+			- 不是看是不是同一個 beat
+	- Root cause 1
+		- 你用 p0_aw_active 直接驅動 axi0_if.wready，但 p0_aw_active 是在bridge 接收最後一拍之後才清掉的，導致最後一拍 W 被重複 handshake
+			- 也就是這行:  axi0_if.wready <= p0_aw_active;
+	- Fix Attempt 1 
+		- WREADY 必須由「W channel state」控制, 而不是由「AW 還 active 不 active」控制
+		- 新增一個signal: p0_w_active
+			- AW handshake 時啟動W channel (p0_w_active拉高)
+			- WREADY改由p0_w_active決定
+			- 在最後一拍W handshake當拍(is_last_now)就關掉WREADY
+	- Result 1
+		- Issue remains
+			
+	- Root cause 2
+		- DUT 在「AXI 規格層面」仍然允許同一個 W beat 被 monitor 視為兩次 handshake
+			- Log表示得很清楚:
+			```
+			# UVM_INFO  @ 56000: [AXI_MON] AW captured: ID=0 addr=0x100 len=0
+			# UVM_INFO  @ 76000: [AXI_MON] W captured: ID=0 Beat=0 Data=0xdeadbeef12345678 
+			# UVM_ERROR @ 86000: [AXI_MON] Extra W beat for ID 0. Exp: 1. WDATA=0xdeadbeef12345678 WLAST=1
+			```
+			- Observation
+				1. Driver只送一個beat (len = 0)
+					- 從monitor的Error message得知:
+						- AWLEN = 0 -> 預期1個beat
+                        - Monitor已經記錄	1個成功的W handshake
+                        - 但又看到另一個handshake條件成立
+							- 所以monitor看到兩次wvalid && wready
+		- 我的wready是"狀態式"的, 不是"脈衝式"的:
+			- axi0_if.wready <= p0_w_active && !p0_local_wr_req;
+			- 我現在的wready是在always_ff底下條件變更的, 這代表:
+				- wready下降是在下一拍才發生
+				- AXI不允許這樣用來做beat限制
+	- Fix Attempt 2
+		- 必須讓 WREADY 在「接受 beat 的那一拍」立刻被 deassert
+		- 解法: 用 combinational-ready + registered accept
+			```
+			wire p0_w_hs;
+			assign p0_w_hs = axi0_if.wvalid && axi0_if.wready;
+			assign axi0_if.wready = p0_w_active && !p0_local_wr_req; 
+			```
+		- Faced issue
+			- Compilation error (vsim-12003): Variable written by continuous and procedural assignments
+				- 這代表同一個signal同時被procedural assignment (<=) 和continuous assignment (assign) => Illegal
+			- Fix
+				- 在memory core中找到procedural assignment, 刪掉並全部改成continuous assignment. Memory core只操作p0_wr_req與內部mem_byte, 不碰wready
+	
+	- Result 2
+		- vsim-12003 issue has been resolved, but UVM log still shows error
+		
+	- Root cause 3
+		- Port0 FSM 與 Memory Core 之間的 handshake沒有完整鏈接
+			- FSM 使用 p0_local_wr_req 表示有新的 W beat
+			- Memory Core 使用 p0_wr_req 來 commit
+			- 兩者沒有橋接信號 → write 永遠不被執行
+	- Fix Attempt 3
+		- 需要在 Port0 FSM 把 p0_local_wr_req 正確轉換成 Memory Core 的 p0_wr_req
+			- axi0_if.wready 完全由 Port0 FSM continuous assign 控制
+			- Memory Core 使用 p0_wr_req 作為 commit trigger
+			- p0_aw_active 只在 AW 及 B channel commit中更新
+	
+	- Result 3
+		- Issue remains
+		
+	- Root cause 4
+		- Simulation 停在「AW/W captured 但 Memory Core 沒 commit」，所以 scoreboard 永遠都是 0
+		- p0_ack_toggle_sync2_dma 是 DMA 端對 Core 端 toggle 的同步, 但一開始 p0_ack_toggle_sync2_dma == 0，p0_req_toggle_dma == 0，第一次 AW/W handshake 的 toggle edge 根本不會被檢測到，所以 if 永遠不成立
+		- 結果就是：p0_wr_req 從來不會被 Memory Core 看到 → Memory Core 不 commit → scoreboard 永遠 0
+				
+	- Fix Attempt 4
+		- 移除 toggle 同步判斷
+		- Port0 FSM 只要 p0_local_wr_req==1 就直接產生 p0_wr_req=1. Memory Core 再 consume 這個 request
+	
+	- Result 4
+		- Fixed toggle issue
+		- Directed test Case 0 passed (Able to see 0xdeadbeef12345678)
+		- But for INCR burst case, write results are all 0xXX... -> Scoreboard mismatch
+	
+	- Root cause 5
+		- Memory Core 沒正確 commit multi-beat writes
+		- 目前的 Memory Core 沒有 FIFO / queue / handshake 來串 multi-beat writes，Port0 FSM 每次 p0_local_wr_req 上升就 overwrite 之前的 beat
+		
+	- Fix Attempt 5
+		- 對 INCR burst：
+			- FSM 看到 AW → 記下 p0_awaddr/p0_awlen/p0_awsize
+			- 每個 W beat → 計算 beat address → 直接寫入 RAM
+			- WLAST → 產生 BVALID/BRESP
+		- 不再用 p0_local_wr_req + p0_wr_req toggle
+	
+	- Result 5
+		- Directed test Case 0 passed, Case 1 issue remains
+	
+	- Root cause 6
+		- BVALID with incomplete write
+			```
+			# UVM_ERROR @ 96000:  [AXI_MON] BVALID with incomplete write. ID=0 Beats=0/1
+			# UVM_ERROR @ 236000: [AXI_MON] BVALID with incomplete write. ID=2 Beats=0/4
+			```
+			- 代表monitor偵測到 BVALID 已經升高，但對應的所有 W beats 還沒被 commit 到 memory core
+				- Two possible reasons:
+					1. Memory core 的 commit 邏輯落後
+						- p0_wr_req 是在同一個 cycle 觸發的，而 B channel 可能也在同一 cycle升高 → monitor 看到 “BVALID = 1，但 Memory 還沒寫任何 beat” → mismatch
+					2. 多 beat 寫入沒有逐 beat commit
+						- 你的 INCR burst (len=3) 有 4 beats (0~3)，但 memory core 只 commit 一次 (p0_wr_req) → 其餘 beats 沒寫 → scoreboard mismatch
+		
+		- READ mismatch
+			```
+			# UVM_ERROR @ 346000: [SCB] READ MISMATCH port=0 addr=0x200 beat=0 exp=0x0 got=0xx id=0x3
+			```
+			- 這是上面問題的結果: Memory沒有寫對數據, 所以讀回來都是X或是0 -> scoreboard mismatch
+	
+
+## 日期
+2026-01-13
+
+Faced issues:
+1. Directed test Case 1 failed
+  - Issue 1
+    - BVALID with incomplete write
+    - W data = X
+    - READ mismatch
+  
+  - Root Cause 1
+    - 完全沒有實作wready
+    - W beat capture 完全沒有handshake保護
+      - 沒有wready
+      - p0_local_wr_req每一拍都被拉高, 沒有清楚的一拍語意
+      - bvalid在看到wlast當拍就拉高
+        - AXI規定最後一個W beat的handshake完成後才能assert BVALID
+    - AW/W/B完全沒有FSM關係
+		
+	- Fix Attempt 1
+		- 每個 W beat 都 commit 到 memory core，不要等到最後一個 beat才 commit
+		- BVALID 只在最後一個 beat升高
+		- 保持 p0_wr_req 與 beat 一一對應，而不是一次 commit 整個 burst
+
+  - Result 1
+    - Same error
+
+
+
+## 日期
+2026-01-14
+
+Faced issues:
+1. Directed test Case 1 failed
+   - Issue 1:
+     - Read mismatch
+     - Driver data always 0xXX
+      
+   - Root cause 1 
+     - Driver在拿到transaction時, tr.data_beats[i] 本身就是X
+       - Proof: [DRV_DBG] W drive beat=0 data=0xx
+         - 這代表sequence 產生的 data 本來就是 X
+     - dir_wdata從來沒有被賦值
+       - 我只有:
+       ```
+       logic [DATA_WIDTH-1:0] dir_wdata; 
+       tr.data_beats[i] = dir_wdata + i;
+       ```
+       - 那麼dir_wdata在SV裡就會是X, 結果就是:
+         - X + 0 = X
+         - X + 1 = X
+         - X + 2 = X
+         - X + 3 = X
+       - 這樣整個write_burst全是X, 才導致:
+         - driver:  data = 0xXX
+         - monitor: Data = 0xXXXXXXXXXXXXXXXX
+         - RAM寫進去是X
+         - read回來也是X
+         - scoreboard mismatch
+  
+   - Fix Attempt 1
+     -  明確初始化 dir_wdata
+        -  在Directed Test中, 加上seq.dir_wata初始值: seq.dir_w = 64h'DEAD_BEEF_0000_0000
+
+   - Result 1
+     - Durected test Case 1 passed
+       -  log
+       ```  
+       # UVM_INFO @ 0:      [SCB] Scoreboard started
+       # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+       # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+       # UVM_INFO @ 55000:  [DRV] Driving WRITE addr=0x200 len=3 id=2
+       # UVM_INFO @ 56000:  [AXI_MON] AW captured: ID=2 addr=0x200 len=3
+       # UVM_INFO @ 75000:  [DRV_DBG] W drive beat=0 data=0xdeadbeef00000000
+       # UVM_INFO @ 76000:  [AXI_MON] W captured: ID=2 Beat=0 Data=0xdeadbeef00000000
+       # UVM_INFO @ 95000:  [DRV_DBG] W drive beat=1 data=0xdeadbeef00000001
+       # UVM_INFO @ 96000:  [AXI_MON] W captured: ID=2 Beat=1 Data=0xdeadbeef00000001
+       # UVM_INFO @ 115000: [DRV_DBG] W drive beat=2 data=0xdeadbeef00000002
+       # UVM_INFO @ 116000: [AXI_MON] W captured: ID=2 Beat=2 Data=0xdeadbeef00000002
+       # UVM_INFO @ 135000: [DRV_DBG] W drive beat=3 data=0xdeadbeef00000003
+       # UVM_INFO @ 136000: [AXI_MON] W captured: ID=2 Beat=3 Data=0xdeadbeef00000003
+       # UVM_INFO @ 156000: [AXI_MON] WRITE completed: ID=2 Addr=0x00000200 Data[0]=0xdeadbeef00000000 (Beats=4)
+       # UVM_INFO @ 175000: [DRV] WRITE done: id=2 BRESP=0
+       # UVM_INFO @ 175000: [uvm_sequence_item] DIRECTED WRITE addr=0x200 beats=4 id=0x2
+       # UVM_INFO @ 175000: [DRV] Driving  READ addr=0x200 len=3 id=3
+       # UVM_INFO @ 285000: [DRV] READ done: id=3 beats=4 first=0xdeadbeef00000000
+       # UVM_INFO @ 285000: [uvm_sequence_item] DIRECTED  READ addr=0x200 beats=4 id=0x3
+       # UVM_INFO @ 285000: [DIRECT_TEST] Directed RAM test case 1 completed
+       # UVM_INFO @ 285000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+       ```
+
+## 日期
+2026-01-15
+
+- Objective: Directed Test Case 2 (WRAP address write/read)
+
+- Goal
+  - BRAM在wrap地址時有正確讀/寫行為
+    - Wrap address example:
+      - beat0: 0x318
+      - beat1: 0x300 (0x318 + 8 = 0x320 → wrap 回 0x300)
+      - beat2: 0x308
+      - beat3: 0x310
+  - 驗證BRAM在wrap address時有正確的address order
+  
+- Changes
+  - 在monitor中新增cal_beat_addr() function
+    - WHY?
+      - 沒有一個 AXI 訊號會在每個 W beat 上直接告訴你「這一拍的 address」
+      - W channel 本來就沒有 address; address 只在 AW channel 一次給出（start addr + burst info）
+      - 所以如果你想在 monitor log 裡看到「每個 beat 的地址」, monitor 只能自己用 AW 的 addr/len/size/burs 去推導
+   

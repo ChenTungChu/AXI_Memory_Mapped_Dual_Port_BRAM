@@ -51,6 +51,43 @@ class axi_mm_monitor #(
         join_none
     endtask
 
+    function automatic logic [ADDR_WIDTH-1:0] calc_beat_addr(
+        input logic [ADDR_WIDTH-1:0] start_addr,
+        input logic [2:0]            size,       // log2(bytes_per_beat)
+        input logic [7:0]            len,        // AXI len (0-based)
+        input logic [1:0]            burst,      // 00 FIXED, 01 INCR, 10 WRAP
+        input int unsigned           beat_idx
+    );
+        int unsigned bytes_per_beat;
+        int unsigned total_beats;
+        int unsigned wrap_bytes;
+        logic [ADDR_WIDTH-1:0] wrap_base;
+        int unsigned offset;
+
+        bytes_per_beat = (1 << size);
+        total_beats    = len + 1;
+        wrap_bytes     = total_beats * bytes_per_beat;
+
+        unique case (burst)
+            2'b00: begin // FIXED
+                return start_addr;
+            end
+            2'b01: begin // INCR
+                return start_addr + (beat_idx * bytes_per_beat);
+            end
+            2'b10: begin // WRAP
+                // AXI WRAP: wrap_bytes is power-of-2 => use mask (robust, no division)
+                wrap_base = start_addr & ~(wrap_bytes - 1);
+
+                offset = (start_addr - wrap_base) + (beat_idx * bytes_per_beat);
+                offset = offset % wrap_bytes;
+
+                return wrap_base + offset;
+            end
+            default: return start_addr;
+        endcase
+    endfunction
+
     // ============================================================
     // Write monitor
     // ============================================================
@@ -59,6 +96,8 @@ class axi_mm_monitor #(
         aw_tr_t       done_tr;
         int unsigned  beat_idx;
         int unsigned  expected_beats;
+        logic [ADDR_WIDTH-1:0] beat_addr;
+ 
 
         forever begin
             @(posedge vif.clk);
@@ -79,7 +118,7 @@ class axi_mm_monitor #(
                 tr_struct.tr.size  = vif.awsize;
                 tr_struct.tr.burst = vif.awburst;
 
-                tr_struct.tr.set_beats_len(); 
+                tr_struct.tr.set_beats_len(tr_struct.tr.len); 
                 tr_struct.beat_cnt = 0;
 
                 write_q.push_back(tr_struct);
@@ -99,12 +138,22 @@ class axi_mm_monitor #(
                     
                 end
                 else begin
+                    // Beat address calculation
+                    beat_addr = calc_beat_addr(write_q[0].tr.addr,
+                           write_q[0].tr.size,
+                           write_q[0].tr.len,
+                           write_q[0].tr.burst,
+                           beat_idx);
+
+
                     write_q[0].tr.data_beats[beat_idx]  = vif.wdata;
                     write_q[0].tr.wstrb_beats[beat_idx] = vif.wstrb;
                     write_q[0].beat_cnt++;
                     
-                    `uvm_info("AXI_MON", $sformatf("W captured: ID=%0d Beat=%0d Data=0x%h", 
-                              write_q[0].tr.id, beat_idx, vif.wdata), UVM_HIGH)
+                    `uvm_info("AXI_MON",
+                        $sformatf("W captured: ID=%0d Beat=%0d Addr=0x%0h Data=0x%h WLAST=%0b burst=%02b size=%0d",
+                            write_q[0].tr.id, beat_idx, beat_addr, vif.wdata, vif.wlast, write_q[0].tr.burst, write_q[0].tr.size),
+                        UVM_HIGH)
                 end
 
                 if (vif.wlast) begin
@@ -149,6 +198,7 @@ class axi_mm_monitor #(
         int unsigned id;
         int unsigned beat_idx;
         int unsigned expected_beats;
+        logic [ADDR_WIDTH-1:0] beat_addr;
 
         forever begin
             @(posedge vif.clk);
@@ -173,7 +223,7 @@ class axi_mm_monitor #(
                     pending_reads_s[id].tr.size  = vif.arsize;
                     pending_reads_s[id].tr.burst = vif.arburst;
                     
-                    pending_reads_s[id].tr.set_beats_len();
+                    pending_reads_s[id].tr.set_beats_len(pending_reads_s[id].tr.len);
                     pending_reads_s[id].beat_cnt = 0;
                 end
             end
@@ -186,16 +236,27 @@ class axi_mm_monitor #(
                 end else begin
                     expected_beats = pending_reads_s[id].tr.len + 1;
                     beat_idx       = pending_reads_s[id].beat_cnt;
+                    beat_addr = calc_beat_addr(pending_reads_s[id].tr.addr,
+                           pending_reads_s[id].tr.size,
+                           pending_reads_s[id].tr.len,
+                           pending_reads_s[id].tr.burst,
+                           beat_idx);
 
                     if (beat_idx < expected_beats) begin
                         pending_reads_s[id].tr.rdata_beats[beat_idx] = vif.rdata;
                         pending_reads_s[id].tr.rresp_beats[beat_idx] = vif.rresp;
                         pending_reads_s[id].beat_cnt++;
+
+                        `uvm_info("AXI_MON", $sformatf("R captured: ID=%0d Beat=%0d Addr=0x%0h Data=0x%h RLAST=%0b", id, beat_idx, beat_addr, vif.rdata, vif.rlast), UVM_HIGH)
                     end else begin
-                        `uvm_error("AXI_MON", "Extra R beat detected")
+                        `uvm_error("AXI_MON", $sformatf("Extra R beat detected: ID=%0d Beat=%0d Addr=0x%0h Data=0x%h RLAST=%0b", id, beat_idx, beat_addr, vif.rdata, vif.rlast))
                     end
 
                     if (vif.rlast) begin
+                        if (pending_reads_s[id].beat_cnt != expected_beats) begin
+                            `uvm_error("AXI_MON", $sformatf("RLAST early/late ID=%0d beats=%0d/%0d", id, pending_reads_s[id].beat_cnt, expected_beats))
+                        end
+                        
                         ap.write(pending_reads_s[id].tr);
                         pending_reads_s.delete(id);
                     end

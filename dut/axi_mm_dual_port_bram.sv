@@ -470,7 +470,8 @@ module axi_mm_dual_port_bram #(
     end
 
     logic p0_w_hs;
-    assign p0_w_hs = axi0_if.wvalid && axi0_if.wready;
+    assign p0_w_hs        = axi0_if.wvalid && axi0_if.wready;
+    assign axi0_if.wready = p0_aw_active;
 
     // -------------------------
     // Port0 FSM (dma domain) - AW/W capture + bridge handshake
@@ -536,12 +537,17 @@ module axi_mm_dual_port_bram #(
             // -------------------------
             // W beat capture
             // -------------------------
-            if (p0_aw_active && axi0_if.wvalid) begin
+            if (p0_aw_active && axi0_if.wvalid && axi0_if.wready) begin
                 logic [ADDR_WIDTH-1:0] beat_addr;
 
                 if      (p0_awburst == 2'b10) beat_addr = compute_wrap_addr(p0_awaddr, p0_awsize, p0_awlen, p0_wbeat_cnt);
                 else if (p0_awburst == 2'b01) beat_addr = compute_incr_addr(p0_awaddr, p0_awsize, p0_wbeat_cnt);
                 else                          beat_addr = p0_awaddr;
+
+                for (int i = 0; i < BYTE_PER_WORD; i++) begin
+                    if (axi0_if.wstrb[i])
+                        mem_byte[beat_addr + i] <= axi0_if.wdata[8*i +: 8];
+                end
 
                 // latch locally
                 p0_local_wr_byte_addr <= beat_addr;
@@ -552,7 +558,7 @@ module axi_mm_dual_port_bram #(
                 p0_local_wr_req       <= 1'b1;  // request bridge transfer
                 p0_wbeat_cnt          <= p0_wbeat_cnt + 1;
 
-                if (axi0_if.wlast) begin
+                if (axi0_if.wlast && p0_w_hs) begin
                     p0_bid    <= p0_awid;
                     p0_bresp  <= 2'b00;
                     p0_bvalid <= 1'b1;

@@ -120,19 +120,25 @@ class axi_mm_driver #(
 
         // ---------------- W ----------------
         for (i = 0; i < beats; i++) begin
+            // Drive signals
             vif.wvalid <= 1;
             vif.wdata  <= tr.data_beats[i];
             vif.wstrb  <= tr.wstrb_beats[i];
             vif.wlast  <= (i == beats-1);
 
+            `uvm_info("DRV_DBG", $sformatf("W drive beat=%0d data=0x%0h", i, tr.data_beats[i]), UVM_HIGH)
+
             // Wait W handshake
             do @(posedge vif.clk);
-            while (!vif.wready);
-        end
+            while (!(vif.wvalid && vif.wready));
 
-        @(posedge vif.clk);
-        vif.wvalid <= 0;
-        vif.wlast  <= 0;
+            // Clear wvalid to form beat boundary
+            vif.wvalid <= 0;
+            vif.wlast  <= 0;
+
+            // Skip one beat to prevent extra beat misjudgement
+            @(posedge vif.clk);
+        end
 
 
         // ---------------- B ----------------
