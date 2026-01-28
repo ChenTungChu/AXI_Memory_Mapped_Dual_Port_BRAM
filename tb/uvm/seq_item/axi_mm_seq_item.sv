@@ -134,20 +134,26 @@ class axi_mm_seq_item #(
         this.bresp       = rhs_.bresp;
         this.comment     = rhs_.comment;
 
-        // Deep copy dynamic arrays
-        this.data_beats  = new[rhs_.data_beats.size()];
-        this.wstrb_beats = new[rhs_.wstrb_beats.size()];
-        foreach (this.data_beats[i]) begin
-            this.data_beats[i]  = rhs_.data_beats[i];
-            this.wstrb_beats[i] = rhs_.wstrb_beats[i];
-        end
+        // Sanity checks (non-fatal)
+        if (rhs_.data_beats.size() != (rhs_.len + 1))
+            `uvm_warning("SEQ_ITEM", $sformatf("data_beats.size=%0d != len+1=%0d", rhs_.data_beats.size(), rhs_.len+1))
+        if (rhs_.wstrb_beats.size() != rhs_.data_beats.size())
+            `uvm_warning("SEQ_ITEM", $sformatf("wstrb_beats.size=%0d != data_beats.size=%0d", rhs_.wstrb_beats.size(), rhs_.data_beats.size()))
 
+        // Deep copy payloads (copy independently to avoid OOB)
+        this.data_beats = new[rhs_.data_beats.size()];
+        foreach (this.data_beats[i]) this.data_beats[i] = rhs_.data_beats[i];
+
+        this.wstrb_beats = new[rhs_.wstrb_beats.size()];
+        foreach (this.wstrb_beats[i]) this.wstrb_beats[i] = rhs_.wstrb_beats[i];
+
+        // Deep copy readback arrays
         this.rdata_beats = new[rhs_.rdata_beats.size()];
+        foreach (this.rdata_beats[i]) this.rdata_beats[i] = rhs_.rdata_beats[i];
+
         this.rresp_beats = new[rhs_.rresp_beats.size()];
-        foreach (this.rdata_beats[i]) begin
-            this.rdata_beats[i] = rhs_.rdata_beats[i];
-            this.rresp_beats[i] = rhs_.rresp_beats[i];
-        end
+        foreach (this.rresp_beats[i]) this.rresp_beats[i] = rhs_.rresp_beats[i];
+        
     endfunction
 
     virtual function bit do_compare(uvm_object rhs, uvm_comparer comparer = null);

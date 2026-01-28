@@ -36,16 +36,19 @@ class axi_mm_seq #(
     // ============================================================
     // DIRECTED MODE knobs
     // ============================================================
+    localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
+
     bit                     directed_mode = 0;
     axi_rw_e                dir_rw;
     logic [ADDR_WIDTH-1:0]  dir_addr;
     logic [DATA_WIDTH-1:0]  dir_wdata;
     int unsigned            dir_beats = 1;
     logic [ID_WIDTH-1:0]    dir_id;
+
     logic [1:0]             dir_burst = 2'b01; // INCR
     logic [2:0]             dir_size  = $clog2(BYTES_PER_BEAT);
 
-    localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
+    logic [(DATA_WIDTH/8)-1:0] dir_wstrb = { BYTES_PER_BEAT{1'b1} }; // Allow partial write mask
 
     // ------------------------------------------------------------
     // Constructor
@@ -96,24 +99,33 @@ class axi_mm_seq #(
             tr.len   = dir_beats - 1;
             tr.id    = dir_id;
 
-            // For Case 1
-            // tr.size  = $clog2(BYTES_PER_BEAT);
-            // tr.burst = 2'b01;
-
-            // For Case 2
             tr.size  = dir_size;
             tr.burst = dir_burst; 
 
+            // ID sanity check
+            if (^dir_id === 1'bX) begin
+                `uvm_fatal("SEQ_ID", "DIRECTED mode: dir_id contains X/Z (not set or unknown)")
+            end
+
+            // dir_id is logic [ID_WIDTH-1:0], so compile-time width is ID_WIDTH
+            // But you might assign an int literal (e.g. 16) and it truncates silently
+            // So we check using an integer cast (preserve the numeric intent)
+            if (int'(dir_id) < 0 || int'(dir_id) >= (1 << ID_WIDTH)) begin
+                `uvm_fatal("SEQ_ID",
+                    $sformatf("DIRECTED mode: dir_id=%0d out of range for ID_WIDTH=%0d (valid 0..%0d). Would truncate!",
+                              int'(dir_id), ID_WIDTH, (1<<ID_WIDTH)-1))
+            end
+
             // Allocate payload arrays
             tr.set_beats_len(tr.len);
-
-            // `uvm_info("SEQ_DBG", $sformatf("dir_wdata = 0x%0h", dir_wdata), UVM_LOW)
 
             // Write payload
             if (dir_rw == AXI_WRITE) begin
                 foreach (tr.data_beats[i]) begin
                     tr.data_beats[i]  = dir_wdata + i;   // Each beat must have unique deterministic data
-                    tr.wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+                    // tr.wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}}; // For Case 2
+                    tr.wstrb_beats[i] = dir_wstrb; // For Case 3
+
                 end
             end
 
@@ -127,7 +139,7 @@ class axi_mm_seq #(
         end
 
         // ========================================================
-        // RANDOM MODE (original behavior)
+        // RANDOM MODE
         // ========================================================
 
         // safety clamps

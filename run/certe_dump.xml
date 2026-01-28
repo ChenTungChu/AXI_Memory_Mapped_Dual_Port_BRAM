@@ -42,7 +42,7 @@
                  ap 
                  <connection>  uvm_test_top.env_h.cov_scoreboard_h.analysis_export  </connection> 
                  <connection>  uvm_test_top.env_h.p0_agent.ap  </connection> 
-                 <connection>  uvm_test_top.env_h.scb.ap_export_p0  </connection> 
+                 <connection>  uvm_test_top.env_h.scb.ap_imp_p0  </connection> 
               </port> 
            </instance> 
   
@@ -91,7 +91,7 @@
                  ap 
                  <connection>  uvm_test_top.env_h.cov_scoreboard_h.analysis_export  </connection> 
                  <connection>  uvm_test_top.env_h.p1_agent.ap  </connection> 
-                 <connection>  uvm_test_top.env_h.scb.ap_export_p1  </connection> 
+                 <connection>  uvm_test_top.env_h.scb.ap_imp_p1  </connection> 
               </port> 
            </instance> 
   
@@ -112,26 +112,66 @@
         </instance> 
   
   
-        <instance type=" axi_mm_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS) "> 
+        <instance type=" axi_mm_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS, STRICT_RANGE) "> 
            scb 
   
-           <export if_type = "uvm_analysis_export" txn_type = "anonymous"> 
-              ap_export_p0 
-              <connection>  uvm_test_top.env_h.scb.ap_imp_p0  </connection> 
-           </export> 
-  
-           <export if_type = "uvm_analysis_export" txn_type = "anonymous"> 
-              ap_export_p1 
-              <connection>  uvm_test_top.env_h.scb.ap_imp_p1  </connection> 
-           </export> 
-  
-           <imp if_type = "uvm_analysis_imp" txn_type = "anonymous"> 
+           <imp if_type = "uvm_analysis_imp_p0" txn_type = "anonymous"> 
               ap_imp_p0 
            </imp> 
   
-           <imp if_type = "uvm_analysis_imp" txn_type = "anonymous"> 
+           <imp if_type = "uvm_analysis_imp_p1" txn_type = "anonymous"> 
               ap_imp_p1 
            </imp> 
+  
+           <instance type=" uvm_tlm_analysis_fifo #(T) "> 
+              fifo_p0 
+  
+              <imp if_type = "uvm_analysis_imp" txn_type = "anonymous"> 
+                 analysis_export 
+              </imp> 
+  
+              <port if_type = "uvm_analysis_port" txn_type = "anonymous"> 
+                 get_ap 
+              </port> 
+  
+              <imp if_type = "uvm_get_peek_imp" txn_type = "anonymous"> 
+                 get_peek_export 
+              </imp> 
+  
+              <port if_type = "uvm_analysis_port" txn_type = "anonymous"> 
+                 put_ap 
+              </port> 
+  
+              <imp if_type = "uvm_put_imp" txn_type = "anonymous"> 
+                 put_export 
+              </imp> 
+           </instance> 
+  
+  
+           <instance type=" uvm_tlm_analysis_fifo #(T) "> 
+              fifo_p1 
+  
+              <imp if_type = "uvm_analysis_imp" txn_type = "anonymous"> 
+                 analysis_export 
+              </imp> 
+  
+              <port if_type = "uvm_analysis_port" txn_type = "anonymous"> 
+                 get_ap 
+              </port> 
+  
+              <imp if_type = "uvm_get_peek_imp" txn_type = "anonymous"> 
+                 get_peek_export 
+              </imp> 
+  
+              <port if_type = "uvm_analysis_port" txn_type = "anonymous"> 
+                 put_ap 
+              </port> 
+  
+              <imp if_type = "uvm_put_imp" txn_type = "anonymous"> 
+                 put_export 
+              </imp> 
+           </instance> 
+  
         </instance> 
   
      </instance> 

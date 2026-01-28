@@ -58,8 +58,8 @@ class axi_mm_env #(
         super.connect_phase(phase);
 
         // Connect monitors to scoreboard
-        p0_agent.mon.ap.connect(scb.ap_export_p0);
-        p1_agent.mon.ap.connect(scb.ap_export_p1);
+        p0_agent.mon.ap.connect(scb.ap_imp_p0);
+        p1_agent.mon.ap.connect(scb.ap_imp_p1);
 
         // Connect monitors to coverage scoreboard
         p0_agent.mon.ap.connect(cov_scoreboard_h.analysis_export);

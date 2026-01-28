@@ -792,7 +792,7 @@ Faced issues:
         -  在Directed Test中, 加上seq.dir_wata初始值: seq.dir_w = 64h'DEAD_BEEF_0000_0000
 
    - Result 1
-     - Durected test Case 1 passed
+     - Durected test Case 1 PASSED
        -  log
        ```  
        # UVM_INFO @ 0:      [SCB] Scoreboard started
@@ -823,7 +823,7 @@ Faced issues:
 
 - Objective: Directed Test Case 2 (WRAP address write/read)
 
-- Goal
+- Goal 1
   - BRAM在wrap地址時有正確讀/寫行為
     - Wrap address example:
       - beat0: 0x318
@@ -832,10 +832,298 @@ Faced issues:
       - beat3: 0x310
   - 驗證BRAM在wrap address時有正確的address order
   
-- Changes
+- Changes 1 
   - 在monitor中新增cal_beat_addr() function
     - WHY?
       - 沒有一個 AXI 訊號會在每個 W beat 上直接告訴你「這一拍的 address」
       - W channel 本來就沒有 address; address 只在 AW channel 一次給出（start addr + burst info）
       - 所以如果你想在 monitor log 裡看到「每個 beat 的地址」, monitor 只能自己用 AW 的 addr/len/size/burs 去推導
+
+- Result 1
+  - Directed test Case 2 PASSED
+    - log
+    ```
+    # UVM_INFO @ 0:      [SCB] Scoreboard started
+    # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+    # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+    # UVM_INFO @ 55000:  [DRV] Driving WRITE addr=0x318 len=3 id=4
+    # UVM_INFO @ 56000:  [AXI_MON] AW captured: ID=4 addr=0x318 len=3
+    # UVM_INFO @ 75000:  [DRV_DBG] W drive beat=0 data=0xcafebabe00000000
+    # UVM_INFO @ 76000:  [AXI_MON] W captured: ID=4 Beat=0 Addr=0x318 Data=0xcafebabe00000000 WLAST=0 burst=10 size=3
+    # UVM_INFO @ 95000:  [DRV_DBG] W drive beat=1 data=0xcafebabe00000001
+    # UVM_INFO @ 96000:  [AXI_MON] W captured: ID=4 Beat=1 Addr=0x300 Data=0xcafebabe00000001 WLAST=0 burst=10 size=3
+    # UVM_INFO @ 115000: [DRV_DBG] W drive beat=2 data=0xcafebabe00000002
+    # UVM_INFO @ 116000: [AXI_MON] W captured: ID=4 Beat=2 Addr=0x308 Data=0xcafebabe00000002 WLAST=0 burst=10 size=3
+    # UVM_INFO @ 135000: [DRV_DBG] W drive beat=3 data=0xcafebabe00000003
+    # UVM_INFO @ 136000: [AXI_MON] W captured: ID=4 Beat=3 Addr=0x310 Data=0xcafebabe00000003 WLAST=1 burst=10 size=3
+    # UVM_INFO @ 156000: [AXI_MON] WRITE completed: ID=4 Addr=0x00000318 Data[0]=0xcafebabe00000000 (Beats=4)
+    # UVM_INFO @ 175000: [DRV] WRITE done: id=4 BRESP=0
+    # UVM_INFO @ 175000: [uvm_sequence_item] DIRECTED WRITE addr=0x318 beats=4 id=0x4 burst=10 size=3
+    # UVM_INFO @ 175000: [DRV] Driving  READ addr=0x318 len=3 id=5
+    # UVM_INFO @ 206000: [AXI_MON] R captured: ID=5 Beat=0 Addr=0x318 Data=0xcafebabe00000000 RLAST=0
+    # UVM_INFO @ 226000: [AXI_MON] R captured: ID=5 Beat=1 Addr=0x300 Data=0xcafebabe00000001 RLAST=0
+    # UVM_INFO @ 246000: [AXI_MON] R captured: ID=5 Beat=2 Addr=0x308 Data=0xcafebabe00000002 RLAST=0
+    # UVM_INFO @ 266000: [AXI_MON] R captured: ID=5 Beat=3 Addr=0x310 Data=0xcafebabe00000003 RLAST=1
+    # UVM_INFO @ 285000: [DRV] READ done: id=5 beats=4 first=0xcafebabe00000000
+    # UVM_INFO @ 285000: [uvm_sequence_item] DIRECTED  READ addr=0x318 beats=4 id=0x5 burst=10 size=3
+    # UVM_INFO @ 285000: [DIRECT_TEST] Directed RAM test case 2 completed
+    # UVM_INFO @ 285000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+    ```
    
+## 日期
+2026-01-17
+
+- Objective: Directed Test Case 3 (Partial write)
+
+- Goal 1 (Case 3.1)
+  - BRAM在Partial write時有正確讀/寫行為
+
+- Expected Output 1:
+  - 第一次Full write
+    - @0x400 address 寫入data 0x1122_3344_5566_7788
+  - 第二次partial write
+    - @0x400 address 寫入data 0x0000_0000_0000_AAAA
+      - 理論上應該只覆蓋 byte[1:0]部分
+  - Read back
+    - 應該要得到 0x1122_3344_5566_AAAA
+
+- Result 1
+  - Directed Test Case 3.1 PASSED
+    - log
+    ```
+    # UVM_INFO @ 0:      [Questa UVM] QUESTA_UVM-1.2.3
+    # UVM_INFO @ 0:      [Questa UVM] questa_uvm::init(all)
+    # UVM_INFO @ 0:      [RNTST] Running test axi_mm_directed_test...
+    # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p0_agent' (ACTIVE)
+    # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p1_agent' (ACTIVE)
+    # UVM_INFO @ 0:      [ENV] axi_mm_env connected monitors to scoreboard
+    # UVM_INFO @ 0:      [Questa UVM] End Of Elaboration
+    # UVM_INFO @ 0:      [DIRECT_TEST] Case 3: Partial strobe write/read
+    # UVM_INFO @ 0:      [SCB] Scoreboard started (STRICT_RANGE=0)
+    # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+    # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+    # UVM_INFO @ 55000:  [DRV] Driving WRITE addr=0x400 len=0 id=6
+    # UVM_INFO @ 56000:  [MON] AW captured: ID=6 addr=0x400 len=0 burst=01 size=3
+    # UVM_INFO @ 75000:  [DRV_DBG] W drive beat=0 data=0x1122334455667788
+    # UVM_INFO @ 76000:  [MON] W captured: ID=6 Beat=0 Addr=0x400 Data=0x1122334455667788 WLAST=1 burst=01 size=3
+    # UVM_INFO @ 96000:  [MON] WRITE completed: ID=6 Addr=0x00000400 Data[0]=0x1122334455667788 (Beats=1)
+    # UVM_INFO @ 115000: [DRV] WRITE done: id=6 BRESP=0
+    # UVM_INFO @ 115000: [uvm_sequence_item] DIRECTED WRITE addr=0x400 beats=1 id=0x6 burst=1 size=3
+    # UVM_INFO @ 115000: [DRV] Driving WRITE addr=0x400 len=0 id=7
+    # UVM_INFO @ 116000: [MON] AW captured: ID=7 addr=0x400 len=0 burst=01 size=3
+    # UVM_INFO @ 135000: [DRV_DBG] W drive beat=0 data=0x000000000000aaaa
+    # UVM_INFO @ 136000: [MON] W captured: ID=7 Beat=0 Addr=0x400 Data=0x000000000000aaaa WLAST=1 burst=01 size=3
+    # UVM_INFO @ 156000: [MON] WRITE completed: ID=7 Addr=0x00000400 Data[0]=0x000000000000aaaa (Beats=1)
+    # UVM_INFO @ 175000: [DRV] WRITE done: id=7 BRESP=0
+    # UVM_INFO @ 175000: [uvm_sequence_item] DIRECTED WRITE addr=0x400 beats=1 id=0x7 burst=1 size=3
+    # UVM_INFO @ 175000: [DRV] Driving  READ addr=0x400 len=0 id=8
+    # UVM_INFO @ 176000: [MON] AR captured: ID=8 addr=0x400 len=0 burst=01 size=3
+    # UVM_INFO @ 206000: [MON] R captured: ID=8 Beat=0 Addr=0x400 Data=0x112233445566aaaa RRESP=0 RLAST=1
+    # UVM_INFO @ 225000: [DRV] READ done: id=8 beats=1 first=0x112233445566aaaa
+    # UVM_INFO @ 225000: [uvm_sequence_item] DIRECTED  READ addr=0x400 beats=1 id=0x8 burst=1 size=3
+    # UVM_INFO @ 225000: [DIRECT_TEST] Directed RAM test case 3 completed (partial strobe)
+    # UVM_INFO @ 225000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+    ```
+
+- Goal 2 (Case 3.2)
+  - Cross-port choherence
+    - P0 full write -> P1 partial write -> P0 and P1 both read
+
+- Expected Output 2:
+  - P0 full write @0x410：0x1122_3344_5566_7788 + wstrb=0xff
+  - P1 partial write @0x410：0xAAAA_0000_0000_0000 + wstrb=0xc0 
+    - 0xC0 = 1100_0000 → 更新 byte[7:6]（最高兩個 byte lane）
+    - So expected data：byte[7:6]=0xAA,0xAA，其餘 byte[5:0] 保留 0x22334455667788 也就是：0xAAAA_3344_5566_7788
+
+  - P0 read @0x410：0xAAAA_3344_5566_7788
+  - P1 read @0x410：0xAAAA_3344_5566_7788
+
+- Result 2
+  - AR miscatch causing R unknowin ID
+  - DUT warning: captured staged p1 with zero WSTRB at addr 0x410
+
+- Root cause 2:
+  - DUT/IF 在某些時刻（尤其是 reset 剛放、或 ready/valid 還沒完全初始化）很可能有一拍 arready 或 arvalid 不是乾淨的 1/0，而是 X
+    - 在 @(posedge clk); #1; 才去看握手 —— 這會讓你很容易 錯過只在 clock edge 成立的一拍握手 
+  - 你在這段裡是用 nonblocking assignment (<=) 去更新 staged_p1_wstrb_dma，但你立刻用
+    if (staged_p1_wstrb_dma == '0) ...去檢查它。
+    在 SystemVerilog 時序上，NBAs 會在 time slot 的 NBA region 才生效
+
+- Fix 2
+  - AW/W/B/AR/R interface 信號判定要更嚴謹, 改用`===`
+  - Remove #1 delay, sample right away
+  - 用 bridge 的來源訊號做 check 解決DUT warning
+
+- Result 2:
+  - Directed Test Case 3.2 PASSED
+  - Monitor 沒再出現 R for unknown ID（之前最大的問題已解）
+  - Case 3.2 的流程完整：
+    - P0 full write @0x410 → P1 partial write @0x410 → P0 read / P1 read 都拿到同一個結果 0xaaaa334455667788
+    - Scoreboard 最後 mismatches=0 且 FINAL RESULT: PASS
+    - stats 也合理：
+      - writes_p0=3（0x400 full + 0x400 partial + 0x410 full）
+      - writes_p1=1（0x410 partial）
+      - reads_p0=2（0x400,0x410）
+      - reads_p1=1（0x410）
+  - log
+  ```
+  # UVM_INFO @ 0:      [Questa UVM] QUESTA_UVM-1.2.3
+  # UVM_INFO @ 0:      [Questa UVM]  questa_uvm::init(all)
+  # UVM_INFO @ 0:      [RNTST] Running test axi_mm_directed_test...
+  # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p0_agent' (ACTIVE)
+  # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p1_agent' (ACTIVE)
+  # UVM_INFO @ 0:      [ENV] axi_mm_env connected monitors to scoreboard
+  # UVM_INFO @ 0:      [Questa UVM] End Of Elaboration
+  # UVM_INFO @ 0:      [DIRECT_TEST] Case 3.2: Cross-port coherence (P0 full -> P1 partial -> read both)
+  # UVM_INFO @ 0:      [SCB] Scoreboard started (STRICT_RANGE=0)
+  # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+  # UVM_INFO @ 55000:  [DRV] Driving WRITE addr=0x410 len=0 id=9
+  # UVM_INFO @ 65000:  [MON] AW captured: ID=9 addr=0x410 len=0 burst=01 size=3
+  # UVM_INFO @ 80000:  [DRV_DBG] W drive beat=0 data=0x1122334455667788 wstrb=0xff
+  # UVM_INFO @ 85000:  [MON] W captured: ID=9 Beat=0 Addr=0x410 Data=0x1122334455667788 WLAST=1 burst=01 size=3
+  # UVM_INFO @ 105000: [MON] WRITE completed: ID=9 Addr=0x410 Data[0]=0x1122334455667788 (Beats=1)
+  # UVM_INFO @ 110000: [DRV] WRITE done: id=9 BRESP=0
+  # UVM_INFO @ 110000: [uvm_sequence_item] DIRECTED WRITE addr=0x410 beats=1 id=0x9 burst=1 size=3
+  # UVM_INFO @ 110000: [DRV] Driving WRITE addr=0x410 len=0 id=10
+  # UVM_INFO @ 120000: [MON] AW captured: ID=10 addr=0x410 len=0 burst=01 size=3
+  # UVM_INFO @ 144000: [DRV_DBG] W drive beat=0 data=0xaaaa000000000000 wstrb=0xc0
+  # UVM_INFO @ 152000: [MON] W captured: ID=10 Beat=0 Addr=0x410 Data=0xaaaa000000000000 WLAST=1 burst=01 size=3
+  # UVM_INFO @ 200000: [MON] WRITE completed: ID=10 Addr=0x410 Data[0]=0xaaaa000000000000 (Beats=1)
+  # UVM_INFO @ 208000: [DRV] WRITE done: id=10 BRESP=0
+  # UVM_INFO @ 208000: [uvm_sequence_item] DIRECTED WRITE addr=0x410 beats=1 id=0xa burst=1 size=3
+  # UVM_INFO @ 208000: [DRV] Driving  READ addr=0x410 len=0 id=11
+  # UVM_INFO @ 215000: [MON] AR captured: ID=11 addr=0x410 len=0 burst=01 size=3
+  # UVM_INFO @ 245000: [MON] R captured: ID=11 Beat=0 Addr=0x410 Data=0xaaaa334455667788 RRESP=0 RLAST=1
+  # UVM_INFO @ 250000: [DRV] READ done: id=11 beats=1 first=0xaaaa334455667788
+  # UVM_INFO @ 250000: [uvm_sequence_item] DIRECTED  READ addr=0x410 beats=1 id=0xb burst=1 size=3
+  # UVM_INFO @ 250000: [DRV] Driving  READ addr=0x410 len=0 id=12
+  # UVM_INFO @ 264000: [MON] AR captured: ID=12 addr=0x410 len=0 burst=01 size=3
+  # UVM_INFO @ 312000: [MON] R captured: ID=12 Beat=0 Addr=0x410 Data=0xaaaa334455667788 RRESP=0 RLAST=1
+  # UVM_INFO @ 320000: [DRV] READ done: id=12 beats=1 first=0xaaaa334455667788
+  # UVM_INFO @ 320000: [uvm_sequence_item] DIRECTED  READ addr=0x410 beats=1 id=0xc burst=1 size=3
+  # UVM_INFO @ 320000: [DIRECT_TEST] Directed RAM test Case 3.2 completed @addr=0x410 (P0 full -> P1 partial -> read both)
+  # UVM_INFO @ 320000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+  # UVM_INFO @ 320000: [SCB] FINAL stats: writes_p0=1 writes_p1=1 reads_p0=1 reads_p1=1 mismatches=0
+  # UVM_INFO @ 320000: [SCB] FINAL RESULT: PASS (no mismatches)
+  ```
+
+- Goal 3 (Case 3.3)
+  - Write collision test
+  - P0 and P1 both write the same address at the same time
+
+- Expected Output 3:
+  - address：例如 0x420（8B aligned）
+  - P0 寫低 4 bytes（WSTRB=0x0F），data 放在低 4B
+  - P1 寫高 4 bytes（WSTRB=0xF0），data 放在高 4B
+  - 這兩筆 盡量同時 start
+  - 然後：
+  - P0 read @ same addr
+  - P1 read @ same addr
+  - 期望讀回：{P1_high4B, P0_low4B} 的 merge 結果
+
+- Result 3:
+  - Directed Test Case 3.3 PASSED
+    - P0 write (WSTRB=0x0F)：只寫低 4 bytes，WDATA=0x00000000_1122_3344
+    - P1 write (WSTRB=0xF0)：只寫高 4 bytes，WDATA=0xAABB_CCDD_0000_0000
+    - 最後 P0 read / P1 read 都回來 0xAABB_CCDD_1122_3344
+    - Scoreboard mismatches=0 / PASS
+    - byte-enable merge 正確
+    - dual-port coherence（兩個 port 對同一個 address 的寫入可被後續讀到一致結果）正確
+    - monitor/driver/scoreboard 的基本資料流也正常（沒有 unknown ID、沒有漏 beat）
+  - log
+  ```
+  # UVM_INFO @ 0:      [Questa UVM] QUESTA_UVM-1.2.3
+  # UVM_INFO @ 0:      [Questa UVM]  questa_uvm::init(all)
+  # UVM_INFO @ 0:      [RNTST] Running test axi_mm_directed_test...
+  # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p0_agent' (ACTIVE)
+  # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:      [AGENT] Building agent 'uvm_test_top.env_h.p1_agent' (ACTIVE)
+  # UVM_INFO @ 0:      [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:      [ENV] axi_mm_env connected monitors to scoreboard
+  # UVM_INFO @ 0:      [Questa UVM] End Of Elaboration
+  # UVM_INFO @ 0:      [DIRECT_TEST] Case 3.3: Same-address cross-port collision + byte-merge
+  # UVM_INFO @ 0:      [SCB] Scoreboard started (STRICT_RANGE=0)
+  # UVM_INFO @ 55000:  [DRV] Driving WRITE addr=0x420 len=0 id=12
+  # UVM_INFO @ 56000:  [DRV] Driving WRITE addr=0x420 len=0 id=13
+  # UVM_INFO @ 65000:  [MON] AW captured: ID=12 addr=0x420 len=0 burst=01 size=3
+  # UVM_INFO @ 72000:  [MON] AW captured: ID=13 addr=0x420 len=0 burst=01 size=3
+  # UVM_INFO @ 80000:  [DRV_DBG] W drive beat=0 data=0x11223344 wstrb=0xf
+  # UVM_INFO @ 85000:  [MON] W captured: ID=12 Beat=0 Addr=0x420 Data=0x0000000011223344 WLAST=1 burst=01 size=3
+  # UVM_INFO @ 96000:  [DRV_DBG] W drive beat=0 data=0xaabbccdd00000000 wstrb=0xf0
+  # UVM_INFO @ 104000: [MON] W captured: ID=13 Beat=0 Addr=0x420 Data=0xaabbccdd00000000 WLAST=1 burst=01 size=3
+  # UVM_INFO @ 105000: [MON] WRITE completed: ID=12 Addr=0x420 Data[0]=0x0000000011223344 (Beats=1)
+  # UVM_INFO @ 110000: [DRV] WRITE done: id=12 BRESP=0
+  # UVM_INFO @ 110000: [uvm_sequence_item] DIRECTED WRITE addr=0x420 beats=1 id=0xc burst=1 size=3
+  # UVM_INFO @ 152000: [MON] WRITE completed: ID=13 Addr=0x420 Data[0]=0xaabbccdd00000000 (Beats=1)
+  # UVM_INFO @ 160000: [DRV] WRITE done: id=13 BRESP=0
+  # UVM_INFO @ 160000: [uvm_sequence_item] DIRECTED WRITE addr=0x420 beats=1 id=0xd burst=1 size=3
+  # UVM_INFO @ 160000: [DRV] Driving  READ addr=0x420 len=0 id=14
+  # UVM_INFO @ 175000: [MON] AR captured: ID=14 addr=0x420 len=0 burst=01 size=3
+  # UVM_INFO @ 205000: [MON] R captured: ID=14 Beat=0 Addr=0x420 Data=0xaabbccdd11223344 RRESP=0 RLAST=1
+  # UVM_INFO @ 210000: [DRV] READ done: id=14 beats=1 first=0xaabbccdd11223344
+  # UVM_INFO @ 210000: [uvm_sequence_item] DIRECTED  READ addr=0x420 beats=1 id=0xe burst=1 size=3
+  # UVM_INFO @ 210000: [DRV] Driving  READ addr=0x420 len=0 id=15
+  # UVM_INFO @ 232000: [MON] AR captured: ID=15 addr=0x420 len=0 burst=01 size=3
+  # UVM_INFO @ 280000: [MON] R captured: ID=15 Beat=0 Addr=0x420 Data=0xaabbccdd11223344 RRESP=0 RLAST=1
+  # UVM_INFO @ 288000: [DRV] READ done: id=15 beats=1 first=0xaabbccdd11223344
+  # UVM_INFO @ 288000: [uvm_sequence_item] DIRECTED  READ addr=0x420 beats=1 id=0xf burst=1 size=3
+  # UVM_INFO @ 288000: [DIRECT_TEST] Case 3.3 expected merged @0x420 = 0xaabbccdd11223344
+  # UVM_INFO @ 288000: [DIRECT_TEST] Directed RAM test Case 3.3 completed @addr=0x420
+  # UVM_INFO @ 288000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+  # UVM_INFO @ 288000: [SCB] FINAL stats: writes_p0=1 writes_p1=1 reads_p0=1 reads_p1=1 mismatches=0
+  # UVM_INFO @ 288000: [SCB] FINAL RESULT: PASS (no mismatches)
+  ```
+
+- Goal 4 (Case 4)
+  -Burst 行為完整性 + 多 beat + WRAP/FIXED + 跨 port 一致性
+
+- Objectives
+  - Case 4.1：INCR burst 多 beat write + readback（同 port）
+    - 4 beats（len=3），size=8B，burst=INCR
+    - 寫完後用 read burst 回讀比對（scoreboard 自動比）
+
+  - Case 4.2：WRAP burst 多 beat write + readback（同 port）
+    - 4 beats WRAP（wrap_bytes=32）
+    - start_addr 刻意放在 wrap region 的最後一個 beat offset，讓第 2 beat 真的 wrap 回 base
+      - 這能驗證：DUT/monitor/scoreboard 的 wrap beat addr 計算一致
+
+  - Case 4.3：FIXED burst（同 addr 重複寫多 beat）+ readback
+    - FIXED burst 的每個 beat 都是同一個地址
+    - 期望行為：最後一拍覆蓋前面（等價於「連續覆寫同一個 word」）read 回來應該看到 最後一拍的資料
+
+  - Case 4.4：跨 port coherence（P0 寫 burst → P0/P1 都讀 burst）
+    - P0 寫完後，P0 與 P1 同地址 burst read（可 fork 同時跑）
+    - 期望兩邊都看到同樣資料序列
+
+  - Write collision test
+  - P0 and P1 both write the same address at the same time
+
+- Expected Output 3:
+  - address：例如 0x420（8B aligned）
+  - P0 寫低 4 bytes（WSTRB=0x0F），data 放在低 4B
+  - P1 寫高 4 bytes（WSTRB=0xF0），data 放在高 4B
+  - 這兩筆 盡量同時 start
+  - 然後：
+  - P0 read @ same addr
+  - P1 read @ same addr
+  - 期望讀回：{P1_high4B, P0_low4B} 的 merge 結果
+
+
+- Goal 5 (Case 5)
+  - Same-port interleaving IDs（兩個 outstanding read / write）
+
+- Objectives
+  - Case 5.1：雙埠「同時」各自做長 burst 寫入 + 交叉 readback
+    - P0：INCR burst 8 beats 寫到 case5_1_p0_addr
+    - P1：INCR burst 8 beats 寫到 case5_1_p1_addr
+    - 兩個 write 用 fork/join 同時打，測你 DUT 的雙埠橋接/CDC 與仲裁壓力
+    - 寫完後，P0/P1 各自把自己的區域讀回來（也用 fork 同時讀）
+
+  - Case 5.2：跨埠同地址「先 full burst，再 partial burst」的 byte-merge（跨多 beat）
+    - P0：對 case5_2_addr 先做 full INCR burst 4 beats
+    - P1：對同一個地址再做 partial INCR burst 4 beats（例如 WSTRB=0x0F 只改低 4 bytes）
+    - 再由 P0、P1 各讀回 4 beats，比對 merge 後結果（由 scoreboard 模型處理）
+
+
+
+

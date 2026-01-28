@@ -4,34 +4,48 @@
 import uvm_pkg::*;
 `include "uvm_macros.svh"
 
+// ----------------------------------------------------------------------------
+// Declare distinct analysis_imp callbacks for p0/p1
+// ----------------------------------------------------------------------------
+`uvm_analysis_imp_decl(_p0)
+`uvm_analysis_imp_decl(_p1)
+
 class axi_mm_scoreboard #(
     int ADDR_WIDTH      = 32,
     int DATA_WIDTH      = 64,
     int ID_WIDTH        = 4,
-    int DEPTH_WORDS     = 1024
+    int DEPTH_WORDS     = 1024,
+    bit STRICT_RANGE    = 0   // 0: modulo wrap (方便 bring-up) / 1: out-of-range => error+ignore
 ) extends uvm_component;
 
-    `uvm_component_utils(axi_mm_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS))
+    `uvm_component_utils(axi_mm_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS, STRICT_RANGE))
 
-    // derived params
+    // -------------------------------------------------------------------------
+    // Derived params
+    // -------------------------------------------------------------------------
     localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
     localparam int MEM_BYTES      = DEPTH_WORDS * BYTES_PER_BEAT;
-    localparam int ADDR_IDX_W     = $clog2(MEM_BYTES);
+
+    localparam int unsigned MAX_SIZE_BYTES = BYTES_PER_BEAT;
+    localparam int unsigned MAX_SIZE_LOG2  = $clog2(BYTES_PER_BEAT);
 
     // -------------------------------------------------------------------------
-    // TLM / analysis ports
+    // Analysis IMPs (monitors connect here)
     // -------------------------------------------------------------------------
-    uvm_analysis_export #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap_export_p0;
-    uvm_analysis_export #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap_export_p1;
-
-    uvm_analysis_imp #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p0;
-    uvm_analysis_imp #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p1;
+    uvm_analysis_imp_p0 #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p0;
+    uvm_analysis_imp_p1 #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p1;
 
     // -------------------------------------------------------------------------
-    // memory model: byte array
+    // Robust processing: FIFOs per port (avoid fork in function)
     // -------------------------------------------------------------------------
-    bit [7:0] mem_model [0:MEM_BYTES-1];
-    bit       written_model[0:MEM_BYTES-1]; // track initialized bytes
+    uvm_tlm_analysis_fifo #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) fifo_p0;
+    uvm_tlm_analysis_fifo #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) fifo_p1;
+
+    // -------------------------------------------------------------------------
+    // Memory model (byte-addressed)
+    // -------------------------------------------------------------------------
+    bit [7:0] mem_model    [0:MEM_BYTES-1];
+    bit       written_model[0:MEM_BYTES-1];
 
     // statistics
     int unsigned writes_seen_p0;
@@ -41,99 +55,282 @@ class axi_mm_scoreboard #(
     int unsigned mismatches;
 
     // -------------------------------------------------------------------------
-    // constructor
+    // Constructor
     // -------------------------------------------------------------------------
     function new(string name = "axi_mm_scoreboard", uvm_component parent = null);
         super.new(name, parent);
+    endfunction
 
-        // Create analysis exports & implement ports
-        ap_export_p0 = new("ap_export_p0", this);
-        ap_export_p1 = new("ap_export_p1", this);
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+    virtual function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
 
         ap_imp_p0 = new("ap_imp_p0", this);
         ap_imp_p1 = new("ap_imp_p1", this);
 
-        // connect exports to imps
-        ap_export_p0.connect(ap_imp_p0);
-        ap_export_p1.connect(ap_imp_p1);
+        fifo_p0 = new("fifo_p0", this);
+        fifo_p1 = new("fifo_p1", this);
+
+        for (int i = 0; i < MEM_BYTES; i++) begin
+            mem_model[i]     = '0;
+            written_model[i] = 1'b0;
+        end
+
+        mismatches     = 0;
+        writes_seen_p0 = 0;
+        writes_seen_p1 = 0;
+        reads_seen_p0  = 0;
+        reads_seen_p1  = 0;
     endfunction
 
     // -------------------------------------------------------------------------
-    // Helper functions
+    // Analysis callbacks (function => must not block)
     // -------------------------------------------------------------------------
-    function automatic int size_to_bytes(logic [2:0] size_field);
-        return (1 << size_field);
+    function void write_p0(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
+        axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) c;
+        $cast(c, tr.clone()); // 依賴你的 do_copy() deep copy dynamic arrays
+        fifo_p0.write(c);
     endfunction
 
-    function automatic logic [ADDR_WIDTH-1:0] compute_incr_addr(
-        logic [ADDR_WIDTH-1:0] addr,
-        logic [2:0]            size_field,
-        int                    beat_index
-    );
-        return addr + (beat_index * size_to_bytes(size_field));
+    function void write_p1(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
+        axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) c;
+        $cast(c, tr.clone());
+        fifo_p1.write(c);
     endfunction
 
-    function automatic logic [ADDR_WIDTH-1:0] compute_wrap_addr(
-        logic [ADDR_WIDTH-1:0] addr,
-        logic [2:0]            size_field,
-        int                    len,
-        int                    beat_index
-    );
-        int beat_bytes;
-        int wrap_bytes;
-        logic [ADDR_WIDTH-1:0] base;
-        beat_bytes = size_to_bytes(size_field);
-        wrap_bytes = (len + 1) * beat_bytes;
-        base = (addr / wrap_bytes) * wrap_bytes;
-        return base + ((addr - base + beat_index * beat_bytes) % wrap_bytes);
+    // -------------------------------------------------------------------------
+    // Helper: size field -> bytes (with sanity)
+    // -------------------------------------------------------------------------
+    function automatic int unsigned size_to_bytes(logic [2:0] size_field);
+        int unsigned bytes;
+        if (size_field > MAX_SIZE_LOG2) begin
+            bytes = MAX_SIZE_BYTES;
+        end else begin
+            bytes = (1 << size_field);
+        end
+        return bytes;
     endfunction
 
+    function automatic bit size_is_legal(logic [2:0] size_field);
+        return (size_field <= MAX_SIZE_LOG2);
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // Helper: address mapping into mem_model index
+    // -------------------------------------------------------------------------
     function automatic int unsigned byte_index(logic [ADDR_WIDTH-1:0] addr);
-        return addr[ADDR_IDX_W-1:0];
+        longint unsigned a;
+        a = addr;
+        return int'(a % MEM_BYTES);
+    endfunction
+
+    function automatic bit addr_in_range(logic [ADDR_WIDTH-1:0] addr);
+        longint unsigned a;
+        a = addr;
+        return (a < MEM_BYTES);
     endfunction
 
     // -------------------------------------------------------------------------
-    // WRITE: apply single beat to memory model
+    // Helper: compute beat address for FIXED/INCR/WRAP
+    // -------------------------------------------------------------------------
+    function automatic logic [ADDR_WIDTH-1:0] compute_beat_addr(
+        input logic [ADDR_WIDTH-1:0] start_addr,
+        input logic [2:0]            size_field,
+        input logic [7:0]            len,
+        input logic [1:0]            burst,
+        input int unsigned           beat_index
+    );
+        int unsigned beat_bytes;
+        int unsigned wrap_bytes;
+        logic [ADDR_WIDTH-1:0] base;
+        logic [ADDR_WIDTH-1:0] off;
+
+        beat_bytes = size_to_bytes(size_field);
+
+        unique case (burst)
+            2'b00: return start_addr; // FIXED
+
+            2'b01: return start_addr + (beat_index * beat_bytes); // INCR
+
+            2'b10: begin // WRAP
+                wrap_bytes = (len + 1) * beat_bytes;
+
+                // AXI requirement: wrap_bytes must be power-of-2
+                if ((wrap_bytes & (wrap_bytes - 1)) != 0) begin
+                    `uvm_error("SCB", $sformatf(
+                        "Illegal WRAP: wrap_bytes=%0d not power-of-2 (start=0x%0h len=%0d size=%0d)",
+                        wrap_bytes, start_addr, len, size_field))
+                    return start_addr; // fallback
+                end
+
+                // base = floor(start / wrap_bytes) * wrap_bytes
+                base = (start_addr / wrap_bytes) * wrap_bytes;
+
+                off  = (start_addr - base) + (beat_index * beat_bytes);
+                off  = off % wrap_bytes;
+
+                return base + off;
+            end
+
+            default: return start_addr;
+        endcase
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // Helper: lane mask (valid lanes covered by this transfer)
+    // -------------------------------------------------------------------------
+    function automatic logic [BYTES_PER_BEAT-1:0] lane_mask(
+        input logic [ADDR_WIDTH-1:0] addr,
+        input logic [2:0]            size_field
+    );
+        logic [BYTES_PER_BEAT-1:0] m;
+        int unsigned bytes;
+        int unsigned off;
+
+        m     = '0;
+        bytes = size_to_bytes(size_field);
+        off   = addr % BYTES_PER_BEAT;
+
+        // 若 addr 對 bytes 對齊且 BYTES_PER_BEAT 是 bytes 的倍數，就不會跨 beat boundary
+        for (int b = 0; b < bytes; b++) begin
+            m[(off + b) % BYTES_PER_BEAT] = 1'b1;
+        end
+        return m;
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // WRITE: apply one beat into byte-model with WSTRB merge
     // -------------------------------------------------------------------------
     task automatic apply_beat_write(
-        input logic [ADDR_WIDTH-1:0] addr,
-        input logic [2:0]            size_field,
-        input logic [DATA_WIDTH-1:0] wdata,
-        input logic [BYTES_PER_BEAT-1:0] wstrb
+        input logic [ADDR_WIDTH-1:0]      beat_addr,
+        input logic [2:0]                 size_field,
+        input logic [DATA_WIDTH-1:0]      wdata,
+        input logic [BYTES_PER_BEAT-1:0]  wstrb
     );
-        int bytes, b, strobe_lane;
+        int unsigned bytes;
+        int unsigned off;
         int unsigned mem_idx;
-        int off;
+        int unsigned lane;
 
         bytes = size_to_bytes(size_field);
-        off = addr % BYTES_PER_BEAT;
+        off   = beat_addr % BYTES_PER_BEAT;
 
-        for (b = 0; b < bytes; b++) begin
-            strobe_lane = (off + b) % BYTES_PER_BEAT;
-            mem_idx     = byte_index(addr + b);
-            if (mem_idx < MEM_BYTES) begin
-                if (wstrb[strobe_lane]) begin
-                    mem_model[mem_idx] = wdata[8*strobe_lane +: 8];
-                    written_model[mem_idx] = 1;
+        for (int b = 0; b < bytes; b++) begin
+            lane    = (off + b) % BYTES_PER_BEAT;
+
+            if (STRICT_RANGE) begin
+                if (!addr_in_range(beat_addr + b)) begin
+                    `uvm_error("SCB", $sformatf("WRITE out-of-range: addr=0x%0h (MEM_BYTES=%0d)", beat_addr + b, MEM_BYTES))
+                    continue;
                 end
             end
-            else begin
-                `uvm_warning("SCB", $sformatf("apply_beat_write: mem_idx out-of-range addr=0x%0h idx=%0d MEM_BYTES=%0d", addr, mem_idx, MEM_BYTES));
+
+            mem_idx = byte_index(beat_addr + b);
+
+            if (wstrb[lane]) begin
+                mem_model[mem_idx]     = wdata[8*lane +: 8];
+                written_model[mem_idx] = 1'b1;
             end
         end
     endtask
 
-    task automatic handle_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr, int src_port);
-        int beats, i;
+    // -------------------------------------------------------------------------
+    // READ: check whether all bytes covered by this beat transfer are initialized
+    // -------------------------------------------------------------------------
+    function automatic bit beat_is_fully_written(
+        input logic [ADDR_WIDTH-1:0] beat_addr,
+        input logic [2:0]            size_field
+    );
+        int unsigned bytes;
+        int unsigned mem_idx;
+
+        bytes = size_to_bytes(size_field);
+
+        for (int b = 0; b < bytes; b++) begin
+            if (STRICT_RANGE && !addr_in_range(beat_addr + b))
+                return 0;
+
+            mem_idx = byte_index(beat_addr + b);
+            if (!written_model[mem_idx])
+                return 0;
+        end
+        return 1;
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // READ: build expected rdata for this beat transfer (only valid lanes filled)
+    // -------------------------------------------------------------------------
+    task automatic compute_expected_beat_read(
+        input  logic [ADDR_WIDTH-1:0] beat_addr,
+        input  logic [2:0]            size_field,
+        output logic [DATA_WIDTH-1:0] rdata
+    );
+        int unsigned bytes;
+        int unsigned off;
+        int unsigned mem_idx;
+        int unsigned lane;
+
+        rdata = '0;
+
+        bytes = size_to_bytes(size_field);
+        off   = beat_addr % BYTES_PER_BEAT;
+
+        for (int b = 0; b < bytes; b++) begin
+            lane = (off + b) % BYTES_PER_BEAT;
+
+            if (STRICT_RANGE && !addr_in_range(beat_addr + b)) begin
+                rdata[8*lane +: 8] = '0;
+                continue;
+            end
+
+            mem_idx = byte_index(beat_addr + b);
+            rdata[8*lane +: 8] = mem_model[mem_idx];
+        end
+    endtask
+
+    // -------------------------------------------------------------------------
+    // Compare got vs expected only on valid lanes (mask)
+    // -------------------------------------------------------------------------
+    function automatic bit beat_compare_ok(
+        input logic [ADDR_WIDTH-1:0] beat_addr,
+        input logic [2:0]            size_field,
+        input logic [DATA_WIDTH-1:0] exp,
+        input logic [DATA_WIDTH-1:0] got
+    );
+        logic [BYTES_PER_BEAT-1:0] m;
+        m = lane_mask(beat_addr, size_field);
+
+        for (int lane = 0; lane < BYTES_PER_BEAT; lane++) begin
+            if (m[lane]) begin
+                if (got[8*lane +: 8] !== exp[8*lane +: 8])
+                    return 0;
+            end
+        end
+        return 1;
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // Handle a full WRITE transaction
+    // -------------------------------------------------------------------------
+    task automatic handle_write(
+        input axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr,
+        input int src_port
+    );
+        int unsigned beats;
         logic [ADDR_WIDTH-1:0] beat_addr;
+
+        // size legality
+        if (!size_is_legal(tr.size)) begin
+            `uvm_error("SCB", $sformatf("Illegal size=%0d (>log2(%0d)) port=%0d id=0x%0h",
+                                        tr.size, BYTES_PER_BEAT, src_port, tr.id))
+        end
 
         beats = tr.len + 1;
 
-        for (i = 0; i < beats; i++) begin
-            if      (tr.burst == 2'b10) beat_addr = compute_wrap_addr(tr.addr, tr.size, tr.len, i);
-            else if (tr.burst == 2'b01) beat_addr = compute_incr_addr(tr.addr, tr.size, i);
-            else                         beat_addr = tr.addr;
-
+        for (int i = 0; i < beats; i++) begin
+            beat_addr = compute_beat_addr(tr.addr, tr.size, tr.len, tr.burst, i);
             apply_beat_write(beat_addr, tr.size, tr.data_beats[i], tr.wstrb_beats[i]);
         end
 
@@ -142,77 +339,42 @@ class axi_mm_scoreboard #(
     endtask
 
     // -------------------------------------------------------------------------
-    // READ helpers
+    // Handle a full READ transaction
     // -------------------------------------------------------------------------
-    function automatic bit beat_is_fully_written(
-        logic [ADDR_WIDTH-1:0] addr,
-        logic [2:0]            size_field
+    task automatic handle_read(
+        input axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr,
+        input int src_port
     );
-        int bytes = size_to_bytes(size_field);
-        int off   = addr % BYTES_PER_BEAT;
-        int unsigned idx;
-
-        for (int b = 0; b < bytes; b++) begin
-            idx = byte_index(addr + b);
-            if (idx >= MEM_BYTES || !written_model[idx])
-                return 0;
-        end
-        return 1;
-    endfunction
-
-    task automatic compute_expected_beat_read(
-        input  logic [ADDR_WIDTH-1:0] addr,
-        input  logic [2:0]            size_field,
-        input  int                    beat_index,
-        input  logic [1:0]            burst,
-        input  int                    len,
-        output logic [DATA_WIDTH-1:0] rdata
-    );
+        int unsigned beats;
         logic [ADDR_WIDTH-1:0] beat_addr;
-        int bytes, b, strobe_lane;
-        int unsigned mem_idx;
-        int off;
-
-        if (burst == 2'b10) beat_addr = compute_wrap_addr(addr, size_field, len, beat_index);
-        else if (burst == 2'b01) beat_addr = compute_incr_addr(addr, size_field, beat_index);
-        else beat_addr = addr;
-
-        bytes = size_to_bytes(size_field);
-        rdata = '0;
-        off = beat_addr % BYTES_PER_BEAT;
-
-        for (b = 0; b < bytes; b++) begin
-            strobe_lane = (off + b) % BYTES_PER_BEAT;
-            mem_idx     = byte_index(beat_addr + b);
-            if (mem_idx < MEM_BYTES) rdata[8*strobe_lane +: 8] = mem_model[mem_idx];
-            else                     rdata[8*strobe_lane +: 8] = '0;
-        end
-    endtask
-
-    task automatic handle_read(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr, int src_port);
-        int beats, i;
         logic [DATA_WIDTH-1:0] expected, got;
-        logic [ADDR_WIDTH-1:0] a;
+
+        if (!size_is_legal(tr.size)) begin
+            `uvm_error("SCB", $sformatf("Illegal size=%0d (>log2(%0d)) port=%0d id=0x%0h",
+                                        tr.size, BYTES_PER_BEAT, src_port, tr.id))
+        end
 
         beats = tr.len + 1;
 
-        for (i = 0; i < beats; i++) begin
-            if      (tr.burst == 2'b10) a = compute_wrap_addr(tr.addr, tr.size, tr.len, i);
-            else if (tr.burst == 2'b01) a = compute_incr_addr(tr.addr, tr.size, i);
-            else                         a = tr.addr;
+        for (int i = 0; i < beats; i++) begin
+            beat_addr = compute_beat_addr(tr.addr, tr.size, tr.len, tr.burst, i);
 
-            if (!beat_is_fully_written(a, tr.size)) begin
-                `uvm_info("SCB", $sformatf("Skip read compare: unwritten addr=0x%0h beat=%0d port=%0d", a, i, src_port), UVM_HIGH)
+            if (!beat_is_fully_written(beat_addr, tr.size)) begin
+                `uvm_info("SCB",
+                    $sformatf("Skip read compare: unwritten beat_addr=0x%0h beat=%0d port=%0d id=0x%0h",
+                              beat_addr, i, src_port, tr.id),
+                    UVM_HIGH)
                 continue;
             end
 
-            compute_expected_beat_read(tr.addr, tr.size, i, tr.burst, tr.len, expected);
+            compute_expected_beat_read(beat_addr, tr.size, expected);
             got = tr.rdata_beats[i];
 
-            if (got !== expected) begin
+            if (!beat_compare_ok(beat_addr, tr.size, expected, got)) begin
                 mismatches++;
-                `uvm_error("SCB", $sformatf("READ MISMATCH port=%0d addr=0x%0h beat=%0d exp=0x%0h got=0x%0h id=0x%0h",
-                                             src_port, compute_incr_addr(tr.addr, tr.size, i), i, expected, got, tr.id));
+                `uvm_error("SCB",
+                    $sformatf("READ MISMATCH port=%0d beat_addr=0x%0h beat=%0d exp=0x%0h got=0x%0h id=0x%0h burst=%02b size=%0d",
+                              src_port, beat_addr, i, expected, got, tr.id, tr.burst, tr.size))
             end
         end
 
@@ -221,370 +383,50 @@ class axi_mm_scoreboard #(
     endtask
 
     // -------------------------------------------------------------------------
-    // Analysis imp callbacks
+    // Run phase: consume FIFOs and process deterministically
     // -------------------------------------------------------------------------
-    virtual function void write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-        axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr_clone;
-        $cast(tr_clone, tr.clone());
-
-        fork
-            if (tr.rw == AXI_WRITE) handle_write(tr_clone, 0);
-            else                    handle_read(tr_clone, 0);
-        join_none
-    endfunction
-
-    function void ap_imp_p0_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-        fork
-            if (tr.rw == AXI_WRITE) handle_write(tr, 0);
-            else                    handle_read(tr, 0);            
-        join_none
-    endfunction
-
-    function void ap_imp_p1_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-        fork
-            if (tr.rw == AXI_WRITE) handle_write(tr, 1);
-            else                    handle_read(tr, 1);
-        join_none
-    endfunction
-
-    // -------------------------------------------------------------------------
-    // UVM Phases
-    // -------------------------------------------------------------------------
-    virtual function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-    endfunction
-
-    virtual function void connect_phase(uvm_phase phase);
-        super.connect_phase(phase);
-    endfunction
-
     task run_phase(uvm_phase phase);
-        `uvm_info("SCB", "Scoreboard started", UVM_LOW)
+        axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr0;
+        axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr1;
 
-        mismatches = 0;
-        writes_seen_p0 = 0;
-        writes_seen_p1 = 0;
-        reads_seen_p0  = 0;
-        reads_seen_p1  = 0;
+        `uvm_info("SCB", $sformatf("Scoreboard started (STRICT_RANGE=%0d)", STRICT_RANGE), UVM_LOW)
 
-        forever begin
-            #10000ns;
-            `uvm_info("SCB", $sformatf("stats: writes_p0=%0d writes_p1=%0d reads_p0=%0d reads_p1=%0d mismatches=%0d",
-                                      writes_seen_p0, writes_seen_p1, reads_seen_p0, reads_seen_p1, mismatches),
-                      UVM_LOW);
-        end
+        fork
+            forever begin
+                fifo_p0.get(tr0);
+                if (tr0.rw == AXI_WRITE) handle_write(tr0, 0);
+                else                     handle_read (tr0, 0);
+            end
+
+            forever begin
+                fifo_p1.get(tr1);
+                if (tr1.rw == AXI_WRITE) handle_write(tr1, 1);
+                else                     handle_read (tr1, 1);
+            end
+
+            forever begin
+                #10000ns;
+                `uvm_info("SCB", $sformatf("stats: writes_p0=%0d writes_p1=%0d reads_p0=%0d reads_p1=%0d mismatches=%0d",
+                                          writes_seen_p0, writes_seen_p1, reads_seen_p0, reads_seen_p1, mismatches),
+                          UVM_LOW);
+            end
+        join
     endtask
+
+    // -------------------------------------------------------------------------
+    // Report phase
+    // -------------------------------------------------------------------------
+    function void report_phase(uvm_phase phase);
+        super.report_phase(phase);
+
+        `uvm_info("SCB", $sformatf("FINAL stats: writes_p0=%0d writes_p1=%0d reads_p0=%0d reads_p1=%0d mismatches=%0d", writes_seen_p0, writes_seen_p1, reads_seen_p0, reads_seen_p1, mismatches), UVM_LOW)
+
+        if (mismatches == 0)
+            `uvm_info("SCB", "FINAL RESULT: PASS (no mismatches)", UVM_NONE)
+        else
+            `uvm_error("SCB", $sformatf("FINAL RESULT: FAIL (mismatches=%0d)", mismatches))
+    endfunction
 
 endclass : axi_mm_scoreboard
 
 `endif
-
-// // File: tb/uvm/axi_mm_scoreboard.sv
-// //
-// // Scoreboard for axi_mm_dual_port_bram
-// // - byte-addressable memory model (mem_model)
-// // - accepts transactions from monitors (per-port) via uvm_analysis_imp
-// // - applies writes according to WSTRB / size / burst
-// // - reconstructs expected read data and compares to DUT read beats
-// //
-// // Limitations / Caveats:
-// // - Port1 (core) writes in DUT are staged and ultimately committed by the dma domain.
-// //   Monitors observe the Port1 interface timing (core domain). This scoreboard applies
-// //   writes at the time the monitor publishes them. If your DUT delays commit of Port1
-// //   writes (i.e., the memory update happens later in dma_clk), you may need to
-// //   either (a) make your monitors publish commit events, or (b) use only Port0 writes
-// //   for tests where immediate visibility is required. For many verification flows
-// //   this simple model is acceptable, but be mindful of cross-domain visibility tests.
-// //
-// // Usage:
-// // - Create an instance in your env and connect monitors' ap to scoreboard's analysis_exports.
-// //   e.g. mon0.ap.connect(scoreboard.ap_export_p0); mon1.ap.connect(scoreboard.ap_export_p1);
-// //
-// // ----------------------------------------------------------------------------
-
-// `ifndef AXI_MM_SCOREBOARD_SV
-// `define AXI_MM_SCOREBOARD_SV
-
-// import uvm_pkg::*;
-// `include "uvm_macros.svh"
-
-// class axi_mm_scoreboard #(
-//     int ADDR_WIDTH      = 32,
-//     int DATA_WIDTH      = 64,
-//     int ID_WIDTH        = 4,
-//     int DEPTH_WORDS     = 1024
-// ) extends uvm_component;
-
-//     `uvm_component_utils(axi_mm_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS))
-
-//     // derived params
-//     localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
-//     localparam int MEM_BYTES      = DEPTH_WORDS * BYTES_PER_BEAT;
-//     localparam int ADDR_IDX_W     = $clog2(MEM_BYTES);
-
-//     // -------------------------------------------------------------------------
-//     // TLM / analysis ports
-//     // -------------------------------------------------------------------------
-//     uvm_analysis_export #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap_export_p0;
-//     uvm_analysis_export #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap_export_p1;
-
-//     uvm_analysis_imp #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p0;
-//     uvm_analysis_imp #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), axi_mm_scoreboard) ap_imp_p1;
-
-//     // -------------------------------------------------------------------------
-//     // memory model: byte array
-//     // -------------------------------------------------------------------------
-//     bit [7:0] mem_model [0:MEM_BYTES-1];
-//     bit       written_model[0:MEM_BYTES-1]; // track initialized bytes
-
-//     // statistics
-//     int unsigned writes_seen_p0;
-//     int unsigned writes_seen_p1;
-//     int unsigned reads_seen_p0;
-//     int unsigned reads_seen_p1;
-//     int unsigned mismatches;
-
-//     // constructor
-//     function new(string name = "axi_mm_scoreboard", uvm_component parent = null);
-//         super.new(name, parent);
-//         ap_export_p0 = new("ap_export_p0", this);
-//         ap_export_p1 = new("ap_export_p1", this);
-
-//         ap_imp_p0 = new("ap_imp_p0", this);
-//         ap_imp_p1 = new("ap_imp_p1", this);
-
-//         ap_export_p0.connect(ap_imp_p0);
-//         ap_export_p1.connect(ap_imp_p1);
-//     endfunction
-
-//     // -------------------------------------------------------------------------
-//     // helper functions (pure calculation)
-//     // -------------------------------------------------------------------------
-//     function automatic int size_to_bytes(logic [2:0] size_field);
-//         return (1 << size_field);
-//     endfunction
-
-//     function automatic logic [ADDR_WIDTH-1:0] compute_incr_addr(
-//         logic [ADDR_WIDTH-1:0] addr,
-//         logic [2:0]            size_field,
-//         int                    beat_index
-//     );
-//         return addr + (beat_index * size_to_bytes(size_field));
-//     endfunction
-
-//     function automatic logic [ADDR_WIDTH-1:0] compute_wrap_addr(
-//         logic [ADDR_WIDTH-1:0] addr,
-//         logic [2:0]            size_field,
-//         int                    len,
-//         int                    beat_index
-//     );
-//         int beat_bytes;
-//         int wrap_bytes;
-//         logic [ADDR_WIDTH-1:0] base;
-//         beat_bytes = size_to_bytes(size_field);
-//         wrap_bytes = (len + 1) * beat_bytes;
-//         base = (addr / wrap_bytes) * wrap_bytes;
-
-//         return  base + ((addr - base + beat_index * beat_bytes) % wrap_bytes);
-//     endfunction
-
-//     function automatic int unsigned byte_index(logic [ADDR_WIDTH-1:0] addr);
-//         return addr[ADDR_IDX_W-1:0];
-//     endfunction
-
-//     // -------------------------------------------------------------------------
-//     // WRITE
-//     // -------------------------------------------------------------------------
-//     task automatic apply_beat_write(
-//         input logic [ADDR_WIDTH-1:0] addr,
-//         input logic [2:0]            size_field,
-//         input logic [DATA_WIDTH-1:0] wdata,
-//         input logic [BYTES_PER_BEAT-1:0] wstrb
-//     );
-//         int bytes, b, strobe_lane;
-//         int unsigned mem_idx;
-//         int off;
-
-//         bytes = size_to_bytes(size_field);
-//         off = addr % BYTES_PER_BEAT;
-
-//         for (b = 0; b < bytes; b++) begin
-//             strobe_lane = (off + b) % BYTES_PER_BEAT;
-//             mem_idx     = byte_index(addr + b);
-//             if (mem_idx < MEM_BYTES) begin
-//                 if (wstrb[strobe_lane]) mem_model[mem_idx] = wdata[8*strobe_lane +: 8];
-//             end
-//             else begin
-//                 `uvm_warning("SCB", $sformatf("apply_beat_write: mem_idx out-of-range addr=0x%0h idx=%0d MEM_BYTES=%0d", addr, mem_idx, MEM_BYTES));
-//             end
-//         end
-//     endtask
-
-//     task automatic handle_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr, int src_port);
-//         int beats, i;
-//         logic [ADDR_WIDTH-1:0] beat_addr;
-
-//         beats = tr.len + 1;
-
-//         for (i = 0; i < beats; i++) begin
-//             if (tr.burst == 2'b10) beat_addr = compute_wrap_addr(tr.addr, tr.size, tr.len, i);
-//             else if (tr.burst == 2'b01) beat_addr = compute_incr_addr(tr.addr, tr.size, i);
-//             else beat_addr = tr.addr;
-
-//             apply_beat_write(beat_addr, tr.size, tr.data_beats[i], tr.wstrb_beats[i]);
-//         end
-
-//         if (src_port == 0) writes_seen_p0++;
-//         else               writes_seen_p1++;
-//     endtask
-
-//     // -------------------------------------------------------------------------
-//     // READ
-//     // -------------------------------------------------------------------------
-//     function automatic bit beat_is_fully_written(
-//         logic [ADDR_WIDTH-1:0] addr,
-//         logic [2:0]            size_field
-//     );
-//         int bytes = size_to_bytes(size_field);
-//         int off   = addr % BYTES_PER_BEAT;
-//         int unsigned idx;
-
-//         for (int b = 0; b < bytes; b++) begin
-//             idx = byte_index(addr + b);
-//             if (idx >= MEM_BYTES || !written_model[idx])
-//                 return 0;
-//         end
-//         return 1;
-//     endfunction
-
-//     task automatic compute_expected_beat_read(
-//         input  logic [ADDR_WIDTH-1:0] addr,
-//         input  logic [2:0]            size_field,
-//         input  int                    beat_index,
-//         input  logic [1:0]            burst,
-//         input  int                    len,
-//         output logic [DATA_WIDTH-1:0] rdata
-//     );
-//         logic [ADDR_WIDTH-1:0] beat_addr;
-//         int bytes, b, strobe_lane;
-//         int unsigned mem_idx;
-//         int off;
-
-//         if (burst == 2'b10) beat_addr = compute_wrap_addr(addr, size_field, len, beat_index);
-//         else if (burst == 2'b01) beat_addr = compute_incr_addr(addr, size_field, beat_index);
-//         else beat_addr = addr;
-
-//         bytes = size_to_bytes(size_field);
-//         rdata = '0;
-//         off = beat_addr % BYTES_PER_BEAT;
-
-//         for (b = 0; b < bytes; b++) begin
-//             strobe_lane = (off + b) % BYTES_PER_BEAT;
-//             mem_idx     = byte_index(beat_addr + b);
-//             if (mem_idx < MEM_BYTES) rdata[8*strobe_lane +: 8] = mem_model[mem_idx];
-//             else                     rdata[8*strobe_lane +: 8] = '0;
-//         end
-//     endtask
-
-//     task automatic handle_read(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr, int src_port);
-//         int beats, i;
-//         logic [DATA_WIDTH-1:0] expected, got;
-//         logic [ADDR_WIDTH-1:0] a;
-
-//         beats = tr.len + 1;
-
-//         for (i = 0; i < beats; i++) begin
-//             if      (tr.burst == 2'b10) a = compute_wrap_addr(tr.addr, tr.size, tr.len, i);
-//             else if (tr.burst == 2'b01) a = compute_incr_addr(tr.addr, tr.size, i);
-//             else                        a = tr.addr;
-
-//             if (!beat_is_fully_written(a, tr.size)) begin
-//                 `uvm_info("SCB",
-//                           $sformatf("Skip read compare: unwritten addr=0x%0h beat=%0d port=%0d",
-//                                     a, i, src_port),
-//                           UVM_HIGH)
-//                 continue;
-//             end
-
-//             compute_expected_beat_read(tr.addr, tr.size, i, tr.burst, tr.len, expected);
-//             got = tr.rdata_beats[i];
-
-//             if (got !== expected) begin
-//                 mismatches++;
-//                 `uvm_error("SCB", $sformatf("READ MISMATCH port=%0d addr=0x%0h beat=%0d exp=0x%0h got=0x%0h id=0x%0h",
-//                                              src_port, compute_incr_addr(tr.addr, tr.size, i), i, expected, got, tr.id));
-//             end
-//         end
-
-//         if (src_port == 0) reads_seen_p0++;
-//         else               reads_seen_p1++;
-//     endtask
-
-//     // -------------------------------------------------------------------------
-//     // uvm_analysis_imp callbacks
-//     // -------------------------------------------------------------------------
-//     virtual function void write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-
-//         // If monitor modified tr contenet, this could let the scoreboard grasp the wrong data
-//         // For safety, clone tr before fork
-//         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr_clone;
-//         $cast(tr_clone, tr.clone());
-
-//         fork
-//             if (tr.rw == AXI_WRITE) handle_write(tr, 0);
-//             else                    handle_read(tr, 0);
-//         join_none
-//     endfunction
-
-//     function void ap_imp_p0_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-//         fork
-//             if (tr.rw == AXI_WRITE) handle_write(tr, 0);
-//             else                    handle_read(tr, 0);            
-//         join_none
-
-//     endfunction
-
-//     function void ap_imp_p1_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
-//         fork
-//             if (tr.rw == AXI_WRITE) handle_write(tr, 1);
-//             else                    handle_read(tr, 1);
-//         join_none
-
-//     endfunction
-
-//     // -------------------------------------------------------------------------
-//     // build/connect phases
-//     // -------------------------------------------------------------------------
-//     virtual function void build_phase(uvm_phase phase);
-//         super.build_phase(phase);
-//     endfunction
-
-//     virtual function void connect_phase(uvm_phase phase);
-//         super.connect_phase(phase);
-//         //ap_export_p0.set_name({"ap_export_p0"});
-//         //ap_export_p1.set_name({"ap_export_p1"});
-//     endfunction
-
-//     // -------------------------------------------------------------------------
-//     // run_phase: periodic stats
-//     // -------------------------------------------------------------------------
-//     task run_phase(uvm_phase phase);
-//         `uvm_info("SCB", "Scoreboard started", UVM_LOW)
-
-//         mismatches = 0;
-//         writes_seen_p0 = 0;
-//         writes_seen_p1 = 0;
-//         reads_seen_p0  = 0;
-//         reads_seen_p1  = 0;
-
-//         forever begin
-//             #10000ns;
-//             `uvm_info("SCB", $sformatf("stats: writes_p0=%0d writes_p1=%0d reads_p0=%0d reads_p1=%0d mismatches=%0d",
-//                                       writes_seen_p0, writes_seen_p1, reads_seen_p0, reads_seen_p1, mismatches),
-//                       UVM_LOW);
-//         end
-//     endtask
-
-// endclass : axi_mm_scoreboard
-
-// `endif
