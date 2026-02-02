@@ -1125,5 +1125,741 @@ Faced issues:
     - 再由 P0、P1 各讀回 4 beats，比對 merge 後結果（由 scoreboard 模型處理）
 
 
+## 日期
+2026-01-27
+
+- Goal 1: Case 5.1 & Case 5.2
+  
+- Issue 1:
+  - Case 5.1 failed
+
+- Root Cause:
+  - DUT only spilled out 2 R beats, after that, rvalid stopped. So driver did not receive handshake -> R TIMEOUT
+    - DUT 的 read FIFO count 更新有致命 bug：沒有處理「同一個 cycle 同時 push + pop」，造成 FIFO 計數被最後一個 <= 覆蓋，等效把「+1 與 -1」變成只剩「-1」，所以 FIFO 會被你自己“扣成空”，rvalid 很快變 0，後面 beats 就不會再出來
+
+- Fix 1:
+  - 把 FIFO push/pop 合併成一次更新（同一個 always_ff 裡只對 count 寫一次）
+    - Port0 / Port1 的 Read FIFO：同一個 cycle push+pop 時，*_rd_count 只更新一次
+    - 同時把 wptr/rptr/count 的更新用 push/pop 統一處理
+
+- Result 1:
+  - Timeout disappeared, Case 5.1 passed
+
+- Result 2:
+  - Case 5.2 passed
+
+- Goal 2: Case 5.3
+  - Design
+    - P0/P1 start with same address
+    - Same 8-beats INCR
+    - WSTRB complement and interchange
+      - P0: 8'hAA (1010_1010) -> Write lane 1, 3, 5, 7
+      - P1: 8'h55 (0101_0101) -> Write lane 0, 2, 4, 6
+    - Data pattern designed as byte recognizable
+      - P0: 64'hA7A6A5A4A3A2A1A0
+      - P1; 64'hB7B6B5B4B3B2B1B0
+  - Expected Output
+    - beat0 for example
+      - P0 provides lanes 1, 3, 5, 7 => A1, A3, A5, A7
+      - P1 provides ;anes 0, 2, 4, 6 => B0, B2, B4, B6
+      - So final beat0 will be: 64'hA7B6A5B4A3B2A1B0
+  
+- Result 2
+  - Case 5.3 PASSED
+  ```
+  # UVM_INFO @ 0:       [Questa UVM] QUESTA_UVM-1.2.3
+  # UVM_INFO @ 0:       [Questa UVM] questa_uvm::init(all)
+  # UVM_INFO @ 0:       [RNTST] Running test axi_mm_directed_test...
+  # UVM_INFO @ 0:       [AGENT] Building agent 'uvm_test_top.env_h.p0_agent' (ACTIVE)
+  # UVM_INFO @ 0:       [DRV_CFG] hold_bready_high=1 hold_rready_high=1 stress_enable=0 bready_prob=100 rready_prob=100 aw_pre_delay_max=0 ar_pre_delay_max=0 w_streaming_mode=0 w_beat_gap_max=0 force_ready_after=64 seed=0
+  # UVM_INFO @ 0:       [VIF] vif(mp_monitor)=/axi_mm_top/dma_if
+  # UVM_INFO @ 0:       [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:       [AGENT] Building agent 'uvm_test_top.env_h.p1_agent' (ACTIVE)
+  # UVM_INFO @ 0:       [DRV_CFG] hold_bready_high=1 hold_rready_high=1 stress_enable=0 bready_prob=100 rready_prob=100 aw_pre_delay_max=0 ar_pre_delay_max=0 w_streaming_mode=0 w_beat_gap_max=0 force_ready_after=64 seed=0
+  # UVM_INFO @ 0:       [VIF] vif(mp_monitor)=/axi_mm_top/core_if
+  # UVM_INFO @ 0:       [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:       [ENV] axi_mm_env connected monitors to scoreboard
+  # UVM_INFO @ 0:       [Questa UVM] End Of Elaboration
+  # UVM_INFO @ 0:       [DIRECT_TEST] Case 5: Cross-port concurrency stress + multi-beat byte-merge
+  # UVM_INFO @ 0:       [DIRECT_TEST] Case 5.3: Same-addr parallel INCR 8 beats + interleaved WSTRB (P0=AA, P1=55) @0x780
+  # UVM_INFO @ 0:       [SCB] Scoreboard started (STRICT_RANGE=0)
+  # UVM_INFO @ 65000:   [DRV] Driving WRITE addr=0x780 len=7 id=12
+  # UVM_INFO @ 72000:   [DRV] Driving WRITE addr=0x780 len=7 id=13
+  # UVM_INFO @ 85000:   [MON_AW_HS] AW HS: ID=12 addr=0x780 len=7 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 95001:   [DRV_DBG] W HS beat=0 data=0xa7a6a5a4a3a2a1a0 wstrb=0xaa last=0
+  # UVM_INFO @ 104000:  [MON_AW_HS] AW HS: ID=13 addr=0x780 len=7 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 105000:  [MON_W_HS] W HS: head_id=12 beat=0/8 addr=0x780 data=0xa7a6a5a4a3a2a1a0 wstrb=0xaa wlast=0
+  # UVM_INFO @ 120001:  [DRV_DBG] W HS beat=0 data=0xb7b6b5b4b3b2b1b0 wstrb=0x55 last=0
+  # UVM_INFO @ 135000:  [MON_W_HS] W HS: head_id=12 beat=1/8 addr=0x788 data=0xa7a6a5a4a3a2a1a1 wstrb=0xaa wlast=0
+  # UVM_INFO @ 135001:  [DRV_DBG] W HS beat=1 data=0xa7a6a5a4a3a2a1a1 wstrb=0xaa last=0
+  # UVM_INFO @ 136000:  [MON_W_HS] W HS: head_id=13 beat=0/8 addr=0x780 data=0xb7b6b5b4b3b2b1b0 wstrb=0x55 wlast=0
+  # UVM_INFO @ 165000:  [MON_W_HS] W HS: head_id=12 beat=2/8 addr=0x790 data=0xa7a6a5a4a3a2a1a2 wstrb=0xaa wlast=0
+  # UVM_INFO @ 165001:  [DRV_DBG] W HS beat=2 data=0xa7a6a5a4a3a2a1a2 wstrb=0xaa last=0
+  # UVM_INFO @ 195000:  [MON_W_HS] W HS: head_id=12 beat=3/8 addr=0x798 data=0xa7a6a5a4a3a2a1a3 wstrb=0xaa wlast=0
+  # UVM_INFO @ 195001:  [DRV_DBG] W HS beat=3 data=0xa7a6a5a4a3a2a1a3 wstrb=0xaa last=0
+  # UVM_INFO @ 225000:  [MON_W_HS] W HS: head_id=12 beat=4/8 addr=0x7a0 data=0xa7a6a5a4a3a2a1a4 wstrb=0xaa wlast=0
+  # UVM_INFO @ 225001:  [DRV_DBG] W HS beat=4 data=0xa7a6a5a4a3a2a1a4 wstrb=0xaa last=0
+  # UVM_INFO @ 232000:  [MON_W_HS] W HS: head_id=13 beat=1/8 addr=0x788 data=0xb7b6b5b4b3b2b1b1 wstrb=0x55 wlast=0
+  # UVM_INFO @ 232001:  [DRV_DBG] W HS beat=1 data=0xb7b6b5b4b3b2b1b1 wstrb=0x55 last=0
+  # UVM_INFO @ 255000:  [MON_W_HS] W HS: head_id=12 beat=5/8 addr=0x7a8 data=0xa7a6a5a4a3a2a1a5 wstrb=0xaa wlast=0
+  # UVM_INFO @ 255001:  [DRV_DBG] W HS beat=5 data=0xa7a6a5a4a3a2a1a5 wstrb=0xaa last=0
+  # UVM_INFO @ 285000:  [MON_W_HS] W HS: head_id=12 beat=6/8 addr=0x7b0 data=0xa7a6a5a4a3a2a1a6 wstrb=0xaa wlast=0
+  # UVM_INFO @ 285001:  [DRV_DBG] W HS beat=6 data=0xa7a6a5a4a3a2a1a6 wstrb=0xaa last=0
+  # UVM_INFO @ 315000:  [MON_W_HS] W HS: head_id=12 beat=7/8 addr=0x7b8 data=0xa7a6a5a4a3a2a1a7 wstrb=0xaa wlast=1
+  # UVM_INFO @ 315001:  [DRV_DBG] W HS beat=7 data=0xa7a6a5a4a3a2a1a7 wstrb=0xaa last=1
+  # UVM_INFO @ 328000:  [MON_W_HS] W HS: head_id=13 beat=2/8 addr=0x790 data=0xb7b6b5b4b3b2b1b2 wstrb=0x55 wlast=0
+  # UVM_INFO @ 328001:  [DRV_DBG] W HS beat=2 data=0xb7b6b5b4b3b2b1b2 wstrb=0x55 last=0
+  # UVM_INFO @ 335000:  [MON_WR_DONE] WRITE completed: ID=12 addr=0x780 beats=8 bresp=0
+  # UVM_INFO @ 345000:  [DRV] WRITE done: id=12 BRESP=0 | 
+  #                                       AW(addr=0x780 len=7 size=3 burst=01 id=12) | 
+  #                                       B(bid=12 bresp=0)
+  # UVM_INFO @ 345000:  [uvm_sequence_item] DIRECTED WRITE addr=0x780 beats=8 id=0xc burst=1 size=3
+  # UVM_INFO @ 424000:  [MON_W_HS] W HS: head_id=13 beat=3/8 addr=0x798 data=0xb7b6b5b4b3b2b1b3 wstrb=0x55 wlast=0
+  # UVM_INFO @ 424001:  [DRV_DBG] W HS beat=3 data=0xb7b6b5b4b3b2b1b3 wstrb=0x55 last=0
+  # UVM_INFO @ 520000:  [MON_W_HS] W HS: head_id=13 beat=4/8 addr=0x7a0 data=0xb7b6b5b4b3b2b1b4 wstrb=0x55 wlast=0
+  # UVM_INFO @ 520001:  [DRV_DBG] W HS beat=4 data=0xb7b6b5b4b3b2b1b4 wstrb=0x55 last=0
+  # UVM_INFO @ 616000:  [MON_W_HS] W HS: head_id=13 beat=5/8 addr=0x7a8 data=0xb7b6b5b4b3b2b1b5 wstrb=0x55 wlast=0
+  # UVM_INFO @ 616001:  [DRV_DBG] W HS beat=5 data=0xb7b6b5b4b3b2b1b5 wstrb=0x55 last=0
+  # UVM_INFO @ 712000:  [MON_W_HS] W HS: head_id=13 beat=6/8 addr=0x7b0 data=0xb7b6b5b4b3b2b1b6 wstrb=0x55 wlast=0
+  # UVM_INFO @ 712001:  [DRV_DBG] W HS beat=6 data=0xb7b6b5b4b3b2b1b6 wstrb=0x55 last=0
+  # UVM_INFO @ 808000:  [MON_W_HS] W HS: head_id=13 beat=7/8 addr=0x7b8 data=0xb7b6b5b4b3b2b1b7 wstrb=0x55 wlast=1
+  # UVM_INFO @ 808001:  [DRV_DBG] W HS beat=7 data=0xb7b6b5b4b3b2b1b7 wstrb=0x55 last=1
+  # UVM_INFO @ 920000:  [MON_WR_DONE] WRITE completed: ID=13 addr=0x780 beats=8 bresp=0
+  # UVM_INFO @ 936000:  [DRV] WRITE done: id=13 BRESP=0 | 
+  #                                      AW(addr=0x780 len=7 size=3 burst=01 id=13) | 
+  #                                      B(bid=13 bresp=0)
+  # UVM_INFO @ 936000:  [uvm_sequence_item] DIRECTED WRITE addr=0x780 beats=8 id=0xd burst=1 size=3
+  # UVM_INFO @ 986000:  [DRV] Driving  READ addr=0x780 len=7 id=15
+  # UVM_INFO @ 986000:  [DRV] Driving  READ addr=0x780 len=7 id=14
+  # UVM_INFO @ 1005000: [MON_AR_HS] AR HS: ID=14 addr=0x780 len=7 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 1016000: [MON_AR_HS] AR HS: ID=15 addr=0x780 len=7 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 1055000: [MON_R_HS] R HS: ID=14 beat=0/8 addr=0x780 data=0xa7b6a5b4a3b2a1b0 rresp=0 rlast=0
+  # UVM_INFO @ 1065000: [MON_R_HS] R HS: ID=14 beat=1/8 addr=0x788 data=0xa7b6a5b4a3b2a1b1 rresp=0 rlast=0
+  # UVM_INFO @ 1075000: [MON_R_HS] R HS: ID=14 beat=2/8 addr=0x790 data=0xa7b6a5b4a3b2a1b2 rresp=0 rlast=0
+  # UVM_INFO @ 1085000: [MON_R_HS] R HS: ID=14 beat=3/8 addr=0x798 data=0xa7b6a5b4a3b2a1b3 rresp=0 rlast=0
+  # UVM_INFO @ 1095000: [MON_R_HS] R HS: ID=14 beat=4/8 addr=0x7a0 data=0xa7b6a5b4a3b2a1b4 rresp=0 rlast=0
+  # UVM_INFO @ 1096000:  [MON_R_HS] R HS: ID=15 beat=0/8 addr=0x780 data=0xa7b6a5b4a3b2a1b0 rresp=0 rlast=0
+  # UVM_INFO @ 1105000:  [MON_R_HS] R HS: ID=14 beat=5/8 addr=0x7a8 data=0xa7b6a5b4a3b2a1b5 rresp=0 rlast=0
+  # UVM_INFO @ 1112000:  [MON_R_HS] R HS: ID=15 beat=1/8 addr=0x788 data=0xa7b6a5b4a3b2a1b1 rresp=0 rlast=0
+  # UVM_INFO @ 1115000:  [MON_R_HS] R HS: ID=14 beat=6/8 addr=0x7b0 data=0xa7b6a5b4a3b2a1b6 rresp=0 rlast=0
+  # UVM_INFO @ 1125000:  [MON_R_HS] R HS: ID=14 beat=7/8 addr=0x7b8 data=0xa7b6a5b4a3b2a1b7 rresp=0 rlast=1
+  # UVM_INFO @ 1128000:  [MON_R_HS] R HS: ID=15 beat=2/8 addr=0x790 data=0xa7b6a5b4a3b2a1b2 rresp=0 rlast=0
+  # UVM_INFO @ 1135000:  [DRV] READ done: id=14 beats=8 first=0xa7b6a5b4a3b2a1b0 | 
+  #                                       AR(addr=0x780 len=7 size=3 burst=01 id=14) | 
+  #                                       R(last=1 rid=14)
+  # UVM_INFO @ 1135000:  [uvm_sequence_item] DIRECTED  READ addr=0x780 beats=8 id=0xe burst=1 size=3
+  # UVM_INFO @ 1144000:  [MON_R_HS] R HS: ID=15 beat=3/8 addr=0x798 data=0xa7b6a5b4a3b2a1b3 rresp=0 rlast=0
+  # UVM_INFO @ 1160000:  [MON_R_HS] R HS: ID=15 beat=4/8 addr=0x7a0 data=0xa7b6a5b4a3b2a1b4 rresp=0 rlast=0
+  # UVM_INFO @ 1176000:  [MON_R_HS] R HS: ID=15 beat=5/8 addr=0x7a8 data=0xa7b6a5b4a3b2a1b5 rresp=0 rlast=0
+  # UVM_INFO @ 1192000:  [MON_R_HS] R HS: ID=15 beat=6/8 addr=0x7b0 data=0xa7b6a5b4a3b2a1b6 rresp=0 rlast=0
+  # UVM_INFO @ 1208000:  [MON_R_HS] R HS: ID=15 beat=7/8 addr=0x7b8 data=0xa7b6a5b4a3b2a1b7 rresp=0 rlast=1
+  # UVM_INFO @ 1224000:  [DRV] READ done: id=15 beats=8 first=0xa7b6a5b4a3b2a1b0 | 
+  #                                       AR(addr=0x780 len=7 size=3 burst=01 id=15) | 
+  #                                       R(last=1 rid=15)
+  # UVM_INFO @ 1224000:  [uvm_sequence_item] DIRECTED  READ addr=0x780 beats=8 id=0xf burst=1 size=3
+  # UVM_INFO @ 1224000:  [DIRECT_TEST] Directed RAM test Case 5 completed
+  # UVM_INFO @ 1224000:  [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+  # UVM_INFO @ 1224000:  [SCB] FINAL stats: writes_p0=1 writes_p1=1 reads_p0=1 reads_p1=1 mismatches=0
+  # UVM_INFO @ 1224000:  [SCB] FINAL RESULT: PASS (no mismatches)
+  ```
+
+
+## 日期
+2026-01-28
+
+- Goal
+  - Start Random Test
+    - 10 Test Cases
+      - Case 1: Basic Random Smoke / Sanity
+        - Configuration
+          - Single port (P0 only)
+          - Low transaction count (≈100–500)
+          - No stress, no backpressure
+          - FIXED / INCR bursts
+          - Small burst length (len ≤ 7)
+          - Fixed data size (8B)
+          - Full WSTRB (all bytes enabled)
+        - Purpose
+          - Validate random sequence infrastructure
+          - Ensure driver / monitor / scoreboard stability
+          - Catch trivial integration or modeling errors early
+
+      - Case 2: Single-Port Ready Backpressure Stress
+        - Configuration
+          - Single port (P0 only)
+          - Driver stress enabled
+          - Randomized bready / rready (≈60–80%)
+          - w_streaming_mode=1
+          - Small address delays and beat gaps
+        - Purpose
+          - Small address delays and beat gaps
+          - Stress driver handling of backpressure
+          - Validate response ordering under stalls
+
+     - Case 3: Dual-Port Independent Random Traffic
+        - Configuration
+         - Dual port (P0 & P1 concurrent)
+         - Separate, non-overlapping address regions
+         - Moderate transaction count
+         - Low conflict by construction
+        - Purpose
+         -  Validate basic dual-port concurrency
+         -  Ensure independence of P0 and P1 channels
+         -  Confirm no cross-port interference under normal conditions
+
+     - Case 4: Dual-Port High-Conflict Random (Shared Window)
+        - Configuration
+         - Dual port active
+         - Both ports restricted to a small shared address window (e.g., 256B–512B)
+         - Mixed reads and writes
+        - Purpose
+         -  Stress address collisions and near-address hazards
+         -  Verify last-writer-wins semantics
+         -  Validate scoreboard consistency under write conflicts
+
+     - Case 5: Mixed Burst Types (INCR / FIXED)
+        - Configuration
+          - Dual port
+          - Randomized burst types (INCR + FIXED)
+          - Moderate stress and interleaving
+        - Purpose
+          -  Validate burst decoding and address progression logic
+          -  Ensure FIXED bursts behave correctly under contention
+
+     - Case 6: Wrap Burst Random (No Window Split)
+        - Configuration
+          - Dual port
+          - WRAP bursts enabled
+          - Power-of-two wrap sizes
+          - Moderate wrap probability
+        - Purpose
+          -  Validate wrap address calculation
+          -  Catch wrap boundary and modulo errors
+          -  Ensure scoreboard wrap modeling matches DUT behavior
+
+     - Case 7: Window-Restricted Random (Split Windows)
+        - Configuration
+          - Dual port
+          - Each port constrained to its own address window
+          - Mixed reads/writes, moderate stress
+        - Purpose
+          -  Validate address window enforcement
+          -  Prepare infrastructure for split-window operation
+          -  Ensure no leakage outside configured regions
+    
+     - Case 8: Wrap Burst with Split Windows (Foldback Focus)
+        - Configuration
+          - Dual port, split windows
+          - High WRAP probability
+          - Enabled address locality
+          - Increasing backpressure and beat gaps
+        - Purpose
+          -  Stress WRAP foldback behavior near window boundaries
+          -  Validate corner wrap + window interactions
+          -  Catch off-by-one and boundary-crossing bugs
+  
+     - Case 9: Size-Randomized Mixed Traffic
+        - Configuration
+          - Dual port, split windows
+          - Randomized AXI sizes (1B / 2B / 4B / 8B)
+          - Mixed reads and writes
+          - Moderate-to-high transaction count
+        - Purpose
+          -  Validate size-dependent address stepping
+          -  Stress scoreboard data slicing and alignment logic
+          -  Ensure correct behavior across all legal AXI sizes
+
+     - Case 10: Partial WSTRB Stress (Write-Heavy)
+        - Configuration
+          - Dual port, split windows
+          - Partial write enabled with randomized byte masks
+          - Write-heavy traffic mix
+          - Moderate-to-high stress (backpressure, gaps, interleaving)
+        - Purpose
+          -  Thoroughly validate byte-lane merge semantics
+          -  Stress scoreboard WSTRB masking model
+          -  Confirm correctness under dense partial-write traffic
+
+## 日期
+2026-01-31
+
+- Random Test Journey: Issues Encountered & Resolutions (R1–R10)
+R1 – Initial Random Bring-Up
+
+Issue
+
+Early uncertainty whether random flow, driver, monitor, and scoreboard were correctly wired.
+
+Risk of “false pass” due to insufficient activity or coverage.
+
+Resolution
+
+Started with low-stress, simple bursts (INCR/FIXED, aligned, full WSTRB).
+
+Confirmed end-to-end data integrity and stable scoreboard behavior.
+
+Established a known-good random baseline.
+
+R2 – Backpressure & Ready/Valid Stress
+
+Issue
+
+Potential deadlocks or dropped handshakes under randomized READY.
+
+Concern about driver robustness when READY toggles aggressively.
+
+Resolution
+
+Added controlled driver stress knobs (bready_prob, rready_prob, pre-delay).
+
+Introduced force_ready_after safeguard to prevent infinite stalls.
+
+Verified no deadlock, no lost beats.
+
+R3 – Dual-Port Concurrency
+
+Issue
+
+Risk of interference between P0 and P1 when running concurrently.
+
+Needed to distinguish DUT bugs vs. scoreboard modeling errors.
+
+Resolution
+
+Ran dual ports with separate address windows (low conflict).
+
+Validated independent progress, ordering, and completion on both ports.
+
+Confirmed scoreboard correctly tracks per-port transactions.
+
+R4 – High Address Conflict
+
+Issue
+
+Heavy overwrite scenarios exposed potential scoreboard mismatches.
+
+Needed clarity on “last writer wins” semantics.
+
+Resolution
+
+Constrained both ports into a small shared window.
+
+Explicitly aligned scoreboard model with DUT overwrite rules.
+
+Validated deterministic behavior under write collisions.
+
+R5 – Read/Write Interleaving Hazards
+
+Issue
+
+RAW/WAR ordering corner cases when reads follow writes closely.
+
+Risk of false mismatches if scoreboard timing assumptions were wrong.
+
+Resolution
+
+Added locality control to cluster accesses near recent addresses.
+
+Ensured scoreboard updates occur on correct protocol events (W/B completion).
+
+Confirmed read data always matches architectural expectations.
+
+R6 – Long Bursts & Sustained Traffic
+
+Issue
+
+Concern about FIFO depth, burst accounting, and internal counters under load.
+
+Potential for rare bugs only visible after thousands of transactions.
+
+Resolution
+
+Increased transaction count and burst lengths.
+
+Verified no overflow, no ordering corruption, no scoreboard drift.
+
+Built confidence in long-run stability.
+
+R7 – Address Window + Memory Clamp Interaction
+
+Issue
+
+Early versions risked generating addresses outside BRAM range when windowing.
+
+Bugs were subtle and seed-dependent.
+
+Resolution
+
+Enforced restrict_to_mem + mem_bytes unconditionally.
+
+Made memory clamp orthogonal to windowing.
+
+Eliminated runaway address generation entirely.
+
+R8 – WRAP Burst Correctness (Split Window)
+
+Issue
+
+WRAP bursts are easy to get “mostly right” but wrong at boundaries.
+
+Foldback behavior at wrap boundary was a high-risk area.
+
+Resolution
+
+Progressed in stages:
+
+R8a: foldback-focused, low stress
+
+R8b: foldback + timing stress
+
+R8: full mix (high wrap %, backpressure, locality)
+
+Verified correct address folding and scoreboard wrap tracking.
+
+Multiple seeds passed → high confidence WRAP correctness.
+
+R9 – SIZE Randomization
+
+Issue
+
+Variable size (1B/2B/4B/8B) greatly increases modeling complexity.
+
+Risk of misaligned accesses and incorrect byte-lane handling.
+
+Resolution
+
+Enabled enable_size_rand with controlled constraints.
+
+Ensured address alignment logic and scoreboard byte math were correct.
+
+Confirmed mixed sizes + wrap + split windows behave correctly.
+
+R10 – Partial WSTRB Stress
+
+Issue
+
+Partial writes are the hardest correctness dimension:
+
+Byte-mask merge
+
+Read-after-partial-write correctness
+
+Needed confidence that partial logic wasn’t accidentally masked by full writes.
+
+Resolution
+
+Added explicit partial_prob control.
+
+Made test write-heavy and kept size fixed to limit combinatorial explosion.
+
+Observed diverse WSTRB patterns across bursts and wraps.
+
+Scoreboard showed zero mismatches across many seeds → strong validation.
+
+
+## 日期
+2026-02-01
+
+- Goal: Start on Corner test
+- Total 10 cases:
+- Case C1 – Zero-Length & Single-Beat Bursts
+
+Focus
+
+AXI LEN=0 (single beat) and minimal burst behavior
+
+Key Checks
+
+WLAST / RLAST assertion
+
+LEN vs actual beat count consistency
+
+Scoreboard off-by-one correctness
+
+Why First
+
+Most deterministic, lowest noise
+
+Immediately exposes fundamental protocol bookkeeping bugs
+
+Case C2 – Partial WSTRB Extremes
+
+Focus
+
+Byte-enable edge cases
+
+Stimulus
+
+WSTRB = all-0 (no byte update)
+
+WSTRB = all-1 (full overwrite)
+
+Optional: single-bit / sparse masks
+
+Key Checks
+
+Memory merge semantics
+
+“No unintended write” on all-zero mask
+
+Why Early
+
+Core correctness of BRAM + scoreboard byte model
+
+Case C3 – FIXED Burst Corner Behavior
+
+Focus
+
+BURST=FIXED, multi-beat transactions
+
+Key Checks
+
+Address must remain constant across beats
+
+Monitor / scoreboard address expansion correctness
+
+Why Here
+
+Isolates FIXED semantics before mixing with WRAP or heavy stress
+
+Case C4 – WRAP Burst: Exact Boundary
+
+Focus
+
+WRAP burst starting exactly on wrap boundary
+
+Key Checks
+
+Correct wrap window size
+
+Clean foldback to base address
+
+Why Before Off-by-One
+
+Establishes a “golden” WRAP reference behavior
+
+Case C5 – WRAP Burst: Off-by-One Foldback
+
+Focus
+
+WRAP bursts starting near (but not exactly on) boundary
+
+Key Checks
+
+Tail-end foldback correctness
+
+No address drift or mis-expansion
+
+Why After C4
+
+Builds on verified exact-boundary behavior
+
+Case C6 – Window Edge Crossing
+
+Focus
+
+INCR bursts crossing split-window boundaries
+
+Stimulus
+
+Bursts starting near window_end - N
+
+Key Checks
+
+Address clamping correctness
+
+No illegal address generation
+
+Why Mid-Sequence
+
+Depends on correct INCR + window logic
+
+Case C7 – Maximum-Length Bursts
+
+Focus
+
+Longest supported burst lengths
+
+Key Checks
+
+FIFO depth assumptions
+
+Monitor / scoreboard queue robustness
+
+Why Later
+
+Avoids burying basic bugs under long traces
+
+Case C8 – AW / AR Channel Contention
+
+Focus
+
+Simultaneous and interleaved AW/AR issuance
+
+Stimulus
+
+Read/write overlap
+
+Independent backpressure
+
+Key Checks
+
+Channel decoupling
+
+No deadlock or lost transactions
+
+Case C9 – ID Ordering Corner Cases
+
+Focus
+
+AXI ID ordering rules
+
+Stimulus
+
+Back-to-back transactions with same ID
+
+Interleaved transactions with different IDs
+
+Key Checks
+
+In-order completion per ID
+
+Correct scoreboard association
+
+Why Late
+
+High log noise, best tested after protocol basics are proven
+
+Case C10 – Reset / Flush During Activity
+
+Focus
+
+Reset or flush with outstanding transactions
+
+Key Checks
+
+Defined reset semantics
+
+Scoreboard/model recovery behavior
+
+Why Last
+
+Most disruptive
+
+Requires all prior invariants to be trusted
+
+
+- Objective 1: Case 1:
+  - Result 1: Case 1 PASSED
+  - log:
+  ```
+  # UVM_INFO @ 0:       [Questa UVM] QUESTA_UVM-1.2.3
+  # UVM_INFO @ 0:       [Questa UVM]  questa_uvm::init(all)
+  # UVM_INFO @ 0:       [RNTST] Running test axi_mm_corner_test...
+  # UVM_INFO @ 0:       [AGENT] Building agent 'uvm_test_top.env_h.p0_agent' ( ACTIVE)
+  # UVM_INFO @ 0:       [DRV_CFG] hold_bready_high=1 hold_rready_high=1 stress_enable=0 bready_prob=100 rready_prob=100 aw_pre_delay_max=0 ar_pre_delay_max=0 w_streaming_mode=0 w_beat_gap_max=0 force_ready_after=64 seed=0
+  # UVM_INFO @ 0:       [VIF] vif(mp_monitor)=/axi_mm_top/dma_if
+  # UVM_INFO @ 0:       [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:       [AGENT] Building agent 'uvm_test_top.env_h.p1_agent' (ACTIVE)
+  # UVM_INFO @ 0:       [DRV_CFG] hold_bready_high=1 hold_rready_high=1 stress_enable=0 bready_prob=100 rready_prob=100 aw_pre_delay_max=0 ar_pre_delay_max=0 w_streaming_mode=0 w_beat_gap_max=0 force_ready_after=64 seed=0
+  # UVM_INFO @ 0:       [VIF] vif(mp_monitor)=/axi_mm_top/core_if
+  # UVM_INFO @ 0:       [MON] AXI-MM Monitor started
+  # UVM_INFO @ 0:       [ENV] axi_mm_env connected monitors to scoreboard
+  # UVM_INFO @ 0:       [Questa UVM] End Of Elaboration
+  # UVM_INFO @ 0:       [CORNER_TEST] Starting AXI-MM corner-case transaction test
+  # UVM_INFO @ 0:       [CORNER_TEST] [CASE_1] Start: LEN=0 single-beat READ/WRITE (INCR/FIXED) + WSTRB(FF/00/partial). a0=0x0 a1=0x1080
+  # UVM_INFO @ 0:       [SCB] Scoreboard started (STRICT_RANGE=0)
+  # UVM_INFO @ 65000:   [DRV] Driving WRITE addr=0x0 len=0 id=1
+  # UVM_INFO @ 72000:   [DRV] Driving WRITE addr=0x1080 len=0 id=5
+  # UVM_INFO @ 85000:   [MON_AW_HS] AW HS: ID=1 addr=0x0 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 95001:   [DRV_DBG] W HS beat=0 data=0xc1c1000000000001 wstrb=0xff last=1
+  # UVM_INFO @ 104000:  [MON_AW_HS] AW HS: ID=5 addr=0x1080 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 105000:  [MON_W_HS] W HS: head_id=1 beat=0/1 addr=0x0 data=0xc1c1000000000001 wstrb=0xff wlast=1
+  # UVM_INFO @ 120001:  [DRV_DBG] W HS beat=0 data=0xc1c1000000001001 wstrb=0xff last=1
+  # UVM_INFO @ 125000:  [MON_WR_DONE] WRITE completed: ID=1 addr=0x0 beats=1 bresp=0
+  # UVM_INFO @ 135000:  [DRV] WRITE done: id=1 BRESP=0 | 
+  #                                       AW(addr=0x0 len=0 size=3 burst=01 id=1) |  
+  #                                       B(bid=1 bresp=0)
+  # UVM_INFO @ 135000:  [DRV] Driving  READ addr=0x0 len=0 id=2
+  # UVM_INFO @ 136000:  [MON_W_HS] W HS: head_id=5 beat=0/1 addr=0x1080 data=0xc1c1000000001001 wstrb=0xff wlast=1
+  # UVM_INFO @ 155000:  [MON_AR_HS] AR HS: ID=2 addr=0x0 len=0 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 205000:  [MON_R_HS] R HS: ID=2 beat=0/1 addr=0x0 data=0xc1c1000000000001 rresp=0 rlast=1
+  # UVM_INFO @ 215000:  [DRV] READ done: id=2 beats=1 first=0xc1c1000000000001 | 
+  #                                      AR(addr=0x0 len=0 size=3 burst=01 id=2) | 
+  #                                      R(last=1 rid=2)
+  # UVM_INFO @ 215000:  [DRV] Driving WRITE addr=0x20 len=0 id=3
+  # UVM_INFO @ 235000:  [MON_AW_HS] AW HS: ID=3 addr=0x20 len=0 burst=00 size=3 (q_depth=1)
+  # UVM_INFO @ 245001:  [DRV_DBG] W HS beat=0 data=0xc1c1000000000003 wstrb=0xff last=1
+  # UVM_INFO @ 248000:  [MON_WR_DONE] WRITE completed: ID=5 addr=0x1080 beats=1 bresp=0
+  # UVM_INFO @ 255000:  [MON_W_HS] W HS: head_id=3 beat=0/1 addr=0x20 data=0xc1c1000000000003 wstrb=0xff wlast=1
+  # UVM_INFO @ 264000:  [DRV] WRITE done: id=5 BRESP=0 | 
+  #                                       AW(addr=0x1080 len=0 size=3 burst=01 id=5) | 
+  #                                       B(bid=5 bresp=0)
+  # UVM_INFO @ 264000:  [DRV] Driving  READ addr=0x1080 len=0 id=6
+  # UVM_INFO @ 275000:  [MON_WR_DONE] WRITE completed: ID=3 addr=0x20 beats=1 bresp=0
+  # UVM_INFO @ 285000:  [DRV] WRITE done: id=3 BRESP=0 | 
+  #                                       AW(addr=0x20 len=0 size=3 burst=00 id=3) | 
+  #                                       B(bid=3 bresp=0)
+  # UVM_INFO @ 285000:  [DRV] Driving  READ addr=0x20 len=0 id=4
+  # UVM_INFO @ 296000:  [MON_AR_HS] AR HS: ID=6 addr=0x1080 len=0 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 305000:  [MON_AR_HS] AR HS: ID=4 addr=0x20 len=0 burst=00 size=3 (pending=1)
+  # UVM_INFO @ 355000:  [MON_R_HS] R HS: ID=4 beat=0/1 addr=0x20 data=0xc1c1000000000003 rresp=0 rlast=1
+  # UVM_INFO @ 365000:  [DRV] READ done: id=4 beats=1 first=0xc1c1000000000003 | 
+  #                                      AR(addr=0x20 len=0 size=3 burst=00 id=4) | 
+  #                                      R(last=1 rid=4)
+  # UVM_INFO @ 365000:  [DRV] Driving WRITE addr=0x60 len=0 id=10
+  # UVM_INFO @ 376000:  [MON_R_HS] R HS: ID=6 beat=0/1 addr=0x1080 data=0xc1c1000000001001 rresp=0 rlast=1
+  # UVM_INFO @ 385000:  [MON_AW_HS] AW HS: ID=10 addr=0x60 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 392000:  [DRV] READ done: id=6 beats=1 first=0xc1c1000000001001 | 
+  #                                      AR(addr=0x1080 len=0 size=3 burst=01 id=6) | 
+  #                                      R(last=1 rid=6)
+  # UVM_INFO @ 392000:  [DRV] Driving WRITE addr=0x10c0 len=0 id=7
+  # UVM_INFO @ 395001:  [DRV_DBG] W HS beat=0 data=0xaaaabbbbccccdddd wstrb=0xff last=1
+  # UVM_INFO @ 405000:  [MON_W_HS] W HS: head_id=10 beat=0/1 addr=0x60 data=0xaaaabbbbccccdddd wstrb=0xff wlast=1
+  # UVM_INFO @ 424000:  [MON_AW_HS] AW HS: ID=7 addr=0x10c0 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 425000:  [MON_WR_DONE] WRITE completed: ID=10 addr=0x60 beats=1 bresp=0
+  # UVM_INFO @ 435000:  [DRV] WRITE done: id=10 BRESP=0 |  
+  #                                       AW(addr=0x60 len=0 size=3 burst=01 id=10) | 
+  #                                       B(bid=10 bresp=0)
+  # UVM_INFO @ 435000:  [DRV] Driving WRITE addr=0x60 len=0 id=11
+  # UVM_INFO @ 440001:  [DRV_DBG] W HS beat=0 data=0x1111222233334444 wstrb=0xff last=1
+  # UVM_INFO @ 455000:  [MON_AW_HS] AW HS: ID=11 addr=0x60 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 456000:  [MON_W_HS] W HS: head_id=7 beat=0/1 addr=0x10c0 data=0x1111222233334444 wstrb=0xff wlast=1
+  # UVM_INFO @ 465001:  [DRV_DBG] W HS beat=0 data=0x1111222233334444 wstrb=0xf last=1
+  # UVM_INFO @ 475000:  [MON_W_HS] W HS: head_id=11 beat=0/1 addr=0x60 data=0x1111222233334444 wstrb=0xf wlast=1
+  # UVM_INFO @ 495000:  [MON_WR_DONE] WRITE completed: ID=11 addr=0x60 beats=1 bresp=0
+  # UVM_INFO @ 505000:  [DRV] WRITE done: id=11 BRESP=0 | 
+  #                                       AW(addr=0x60 len=0 size=3 burst=01 id=11) | 
+  #                                       B(bid=11 bresp=0)
+  # UVM_INFO @ 505000:  [DRV] Driving  READ addr=0x60 len=0 id=12
+  # UVM_INFO @ 525000:  [MON_AR_HS] AR HS: ID=12 addr=0x60 len=0 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 568000:  [MON_WR_DONE] WRITE completed: ID=7 addr=0x10c0 beats=1 bresp=0
+  # UVM_INFO @ 575000:  [MON_R_HS] R HS: ID=12 beat=0/1 addr=0x60 data=0xaaaabbbb33334444 rresp=0 rlast=1
+  # UVM_INFO @ 584000:  [DRV] WRITE done: id=7 BRESP=0 | 
+  #                                       AW(addr=0x10c0 len=0 size=3 burst=01 id=7) | 
+  #                                       B(bid=7 bresp=0)
+  # UVM_INFO @ 584000:  [DRV] Driving WRITE addr=0x10c0 len=0 id=8
+  # UVM_INFO @ 585000:  [DRV] READ done: id=12 beats=1 first=0xaaaabbbb33334444 | 
+  #                                      AR(addr=0x60 len=0 size=3 burst=01 id=12) | 
+  #                                      R(last=1 rid=12)
+  # UVM_INFO @ 616000:  [MON_AW_HS] AW HS: ID=8 addr=0x10c0 len=0 burst=01 size=3 (q_depth=1)
+  # UVM_INFO @ 632001:  [DRV_DBG] W HS beat=0 data=0xdeadbeefdeadbeef wstrb=0x0 last=1
+  # UVM_INFO @ 648000:  [MON_W_HS] W HS: head_id=8 beat=0/1 addr=0x10c0 data=0xdeadbeefdeadbeef wstrb=0x0 wlast=1
+  # UVM_INFO @ 760000:  [MON_WR_DONE] WRITE completed: ID=8 addr=0x10c0 beats=1 bresp=0
+  # UVM_INFO @ 776000:  [DRV] WRITE done: id=8 BRESP=0 | 
+  #                                       AW(addr=0x10c0 len=0 size=3 burst=01 id=8) | 
+  #                                       B(bid=8 bresp=0)
+  # UVM_INFO @ 776000:  [DRV] Driving  READ addr=0x10c0 len=0 id=9
+  # UVM_INFO @ 808000:  [MON_AR_HS] AR HS: ID=9 addr=0x10c0 len=0 burst=01 size=3 (pending=1)
+  # UVM_INFO @ 888000:  [MON_R_HS] R HS: ID=9 beat=0/1 addr=0x10c0 data=0x1111222233334444 rresp=0 rlast=1
+  # UVM_INFO @ 904000:  [DRV] READ done: id=9 beats=1 first=0x1111222233334444 | 
+  #                                      AR(addr=0x10c0 len=0 size=3 burst=01 id=9) | 
+  #                                      R(last=1 rid=9)
+  # UVM_INFO @ 1104000: [CORNER_TEST] [CASE_1] Done.
+  # UVM_INFO @ 1104000: [CORNER_TEST] Corner-case transaction test completed
+  # UVM_INFO @ 1104000: [TEST_DONE] 'run' phase is ready to proceed to the 'extract' phase
+  # UVM_INFO @ 1104000: [SCB] FINAL stats: writes_p0=4 writes_p1=3 reads_p0=3 reads_p1=2 mismatches=0
+  # UVM_INFO @ 1104000: [SCB] FINAL RESULT: PASS (no mismatches)
+  ```
 
 

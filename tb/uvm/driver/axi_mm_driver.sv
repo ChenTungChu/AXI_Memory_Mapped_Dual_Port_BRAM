@@ -280,6 +280,20 @@ class axi_mm_driver #(
         aw_lat_valid = 0;
         b_lat_valid  = 0;
 
+        // --------------------------------------------------
+        // Defensive check: payload arrays must match beats
+        // --------------------------------------------------
+        if (tr.data_beats.size() != beats || tr.wstrb_beats.size() != beats) begin
+            `uvm_fatal("DRV_ITEM",
+                $sformatf(
+                    "Bad payload array size: beats=%0d data=%0d wstrb=%0d (addr=0x%0h id=%0d)",
+                    beats,
+                    tr.data_beats.size(),
+                    tr.wstrb_beats.size(),
+                    tr.addr,
+                    tr.id))
+        end
+
         // Random pre-delay before AW (stress only)
         maybe_wait_cycles(aw_pre_delay_max);
 
@@ -601,19 +615,18 @@ class axi_mm_driver #(
             vif.cb_master.rready <= 1'b0;
         end
 
-        `uvm_info("DRV",
-            $sformatf("READ done: id=%0d beats=%0d first=0x%0h | \n\n\
-                                           AR(addr=0x%0h len=%0d size=%0d burst=%02b id=%0d) | \n\n\
-                                           R(last=%0b rid=%0d)",
-                      tr.id, beats, tr.rdata_beats[0],
-                      (ar_lat_valid ? ar_addr_lat  : tr.addr),
-                      (ar_lat_valid ? ar_len_lat   : tr.len),
-                      (ar_lat_valid ? ar_size_lat  : tr.size),
-                      (ar_lat_valid ? ar_burst_lat : tr.burst),
-                      (ar_lat_valid ? ar_id_lat    : tr.id),
-                      (r_lat_valid ? r_last_lat : 1'bx),
-                      (r_lat_valid ? r_id_lat   : 'x)),
-            UVM_LOW)
+        `uvm_info("DRV", $sformatf("READ done: id=%0d beats=%0d first=0x%0h | \n\n\
+                                    AR(addr=0x%0h len=%0d size=%0d burst=%02b id=%0d) | \n\n\
+                                    R(last=%0b rid=%0d)",
+                                    tr.id, beats, tr.rdata_beats[0],
+                                    (ar_lat_valid ? ar_addr_lat  : tr.addr),
+                                    (ar_lat_valid ? ar_len_lat   : tr.len),
+                                    (ar_lat_valid ? ar_size_lat  : tr.size),
+                                    (ar_lat_valid ? ar_burst_lat : tr.burst),
+                                    (ar_lat_valid ? ar_id_lat    : tr.id),
+                                    (r_lat_valid ? r_last_lat : 1'bx),
+                                    (r_lat_valid ? r_id_lat   : 'x)),
+        UVM_LOW)
     endtask
 
 endclass
