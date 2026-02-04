@@ -13,16 +13,20 @@ work_*/
 # Waveform database
 *.wlf
 wlft*
+*.vcd
 
 # Transcript / logs
 transcript
 *.log
+*.xml
 
 # Temporary / backup files
 *.bak
 *.tmp
 *.swp
 *.swo
+*.ini
+*.vstf
 
 # Windows junk
 Thumbs.db
