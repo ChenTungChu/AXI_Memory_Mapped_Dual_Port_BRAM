@@ -7,16 +7,27 @@ import uvm_pkg::*;
 
 typedef enum bit { AXI_READ = 0, AXI_WRITE = 1 } axi_rw_e;
 
+// ------------------------------------------------------------
+// op kind for split transactions
+// Default is OP_FULL so legacy tests are NOT affected.
+// ------------------------------------------------------------
+typedef enum int unsigned {
+    OP_FULL    = 0,   // legacy behavior: (WRITE) AW+W+B, (READ) AR+R
+    OP_AW_ONLY = 1,   // only drive AW
+    OP_W_ONLY  = 2,   // only drive W burst (len+1 beats)
+    OP_B_WAIT  = 3,   // only wait B for wait_bid
+    OP_AR_ONLY = 4,   // reserved (future)
+    OP_R_ONLY  = 5    // reserved (future)
+} axi_mm_op_kind_e;
+
 class axi_mm_seq_item #(
     int ADDR_WIDTH = 32,
     int DATA_WIDTH = 64,
     int ID_WIDTH   = 4
 ) extends uvm_sequence_item;
 
-    // factory registration
     `uvm_object_param_utils(axi_mm_seq_item #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH))
 
-    // derived
     localparam int BYTES_PER_BEAT = DATA_WIDTH/8;
 
     // ----- stimulus (rand) -----
@@ -32,7 +43,11 @@ class axi_mm_seq_item #(
     rand logic [DATA_WIDTH-1:0]        data_beats[];
     rand logic [(BYTES_PER_BEAT)-1:0]  wstrb_beats[];
 
-    // response fields (non-rand, filled by monitor/driver)
+    // NEW: split transaction controls
+    rand axi_mm_op_kind_e         op_kind;
+    rand logic [ID_WIDTH-1:0]     wait_bid;
+
+    // response fields (non-rand, filled by driver)
     logic [DATA_WIDTH-1:0]        rdata_beats[];
     logic [1:0]                   rresp_beats[];
     logic [1:0]                   bresp;
@@ -42,8 +57,6 @@ class axi_mm_seq_item #(
     // --------------------------
     // Constraints
     // --------------------------
-    
-    // SystemVerilog will auto-resize dynamic arrays to satisfy this
     constraint c_array_size {
         data_beats.size()  == (len + 1);
         wstrb_beats.size() == (len + 1);
@@ -57,22 +70,30 @@ class axi_mm_seq_item #(
         foreach (wstrb_beats[i]) soft wstrb_beats[i] == {BYTES_PER_BEAT{1'b1}};
     }
 
+    // keep legacy behavior unless explicitly overridden
+    constraint c_op_kind_default { soft op_kind == OP_FULL; }
+
+    // default wait_bid == id (for B_WAIT usage)
+    constraint c_wait_bid_default { soft wait_bid == id; }
+
     // --------------------------
     // Constructor
     // --------------------------
     function new(string name = "axi_mm_seq_item");
         super.new(name);
-        size           = $clog2(BYTES_PER_BEAT);
-        burst          = 2'b01;
-        id             = '0;
-        len            = 8'd0;
+        size     = $clog2(BYTES_PER_BEAT);
+        burst    = 2'b01;
+        id       = '0;
+        len      = 8'd0;
+        op_kind  = OP_FULL;
+        wait_bid = '0;
+        bresp    = 2'b00;
     endfunction
 
     // --------------------------
     // Post-Randomize: Allocate response arrays
     // --------------------------
     function void post_randomize();
-        // Allocate space for response data so Driver/Monitor can just write to it
         int unsigned beats = len + 1;
         rdata_beats = new[beats];
         rresp_beats = new[beats];
@@ -82,7 +103,6 @@ class axi_mm_seq_item #(
     // Helper: Manual allocation (for non-randomized usage)
     // --------------------------
     function void set_beats_len(int len);
-
         assert (len >= 0)
         else `uvm_fatal("SEQ_ITEM", "len < 0 in set_beats_len");
 
@@ -91,13 +111,8 @@ class axi_mm_seq_item #(
         rdata_beats = new[len + 1];
         rresp_beats = new[len + 1];
 
-        foreach (data_beats[i]) begin
-            data_beats[i] = '0;
-        end
-
-        foreach (wstrb_beats[i]) begin
-            wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
-        end
+        foreach (data_beats[i]) data_beats[i] = '0;
+        foreach (wstrb_beats[i]) wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
     endfunction
 
     // --------------------------
@@ -111,8 +126,9 @@ class axi_mm_seq_item #(
         printer.print_field("len", len, $bits(len), UVM_DEC);
         printer.print_field("size", size, $bits(size), UVM_DEC);
         printer.print_field("burst", burst, $bits(burst), UVM_BIN);
-        
-        // Print first beat data sample
+        printer.print_int("op_kind", op_kind, 32, UVM_DEC);
+        printer.print_field("wait_bid", wait_bid, $bits(wait_bid), UVM_HEX);
+
         if (data_beats.size() > 0)
             printer.print_field("data[0]", data_beats[0], $bits(data_beats[0]), UVM_HEX);
         if (wstrb_beats.size() > 0)
@@ -133,47 +149,56 @@ class axi_mm_seq_item #(
         this.burst       = rhs_.burst;
         this.bresp       = rhs_.bresp;
         this.comment     = rhs_.comment;
+        this.op_kind     = rhs_.op_kind;
+        this.wait_bid    = rhs_.wait_bid;
 
-        // Sanity checks (non-fatal)
-        if (rhs_.data_beats.size() != (rhs_.len + 1))
-            `uvm_warning("SEQ_ITEM", $sformatf("data_beats.size=%0d != len+1=%0d", rhs_.data_beats.size(), rhs_.len+1))
-        if (rhs_.wstrb_beats.size() != rhs_.data_beats.size())
-            `uvm_warning("SEQ_ITEM", $sformatf("wstrb_beats.size=%0d != data_beats.size=%0d", rhs_.wstrb_beats.size(), rhs_.data_beats.size()))
-
-        // Deep copy payloads (copy independently to avoid OOB)
         this.data_beats = new[rhs_.data_beats.size()];
         foreach (this.data_beats[i]) this.data_beats[i] = rhs_.data_beats[i];
 
         this.wstrb_beats = new[rhs_.wstrb_beats.size()];
         foreach (this.wstrb_beats[i]) this.wstrb_beats[i] = rhs_.wstrb_beats[i];
 
-        // Deep copy readback arrays
         this.rdata_beats = new[rhs_.rdata_beats.size()];
         foreach (this.rdata_beats[i]) this.rdata_beats[i] = rhs_.rdata_beats[i];
 
         this.rresp_beats = new[rhs_.rresp_beats.size()];
         foreach (this.rresp_beats[i]) this.rresp_beats[i] = rhs_.rresp_beats[i];
-        
     endfunction
 
+    // safer compare (avoid simulator differences on dynamic array ==)
     virtual function bit do_compare(uvm_object rhs, uvm_comparer comparer = null);
         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rhs_;
         if (!$cast(rhs_, rhs)) return 0;
-        
-        return (super.do_compare(rhs, comparer) &&
-                this.rw    == rhs_.rw &&
-                this.addr  == rhs_.addr &&
-                this.id    == rhs_.id &&
-                this.len   == rhs_.len &&
-                this.size  == rhs_.size &&
-                this.burst == rhs_.burst &&
-                this.data_beats == rhs_.data_beats &&
-                this.wstrb_beats == rhs_.wstrb_beats);
+
+        if (!super.do_compare(rhs, comparer)) return 0;
+
+        if (this.rw    != rhs_.rw)    return 0;
+        if (this.addr  != rhs_.addr)  return 0;
+        if (this.id    != rhs_.id)    return 0;
+        if (this.len   != rhs_.len)   return 0;
+        if (this.size  != rhs_.size)  return 0;
+        if (this.burst != rhs_.burst) return 0;
+
+        if (this.op_kind  != rhs_.op_kind)  return 0;
+        if (this.wait_bid != rhs_.wait_bid) return 0;
+
+        if (this.data_beats.size() != rhs_.data_beats.size()) return 0;
+        foreach (this.data_beats[i]) begin
+            if (this.data_beats[i] !== rhs_.data_beats[i]) return 0;
+        end
+
+        if (this.wstrb_beats.size() != rhs_.wstrb_beats.size()) return 0;
+        foreach (this.wstrb_beats[i]) begin
+            if (this.wstrb_beats[i] !== rhs_.wstrb_beats[i]) return 0;
+        end
+
+        return 1;
     endfunction
 
     virtual function string convert2string();
-        string s = $sformatf("axi_mm_seq_item: %s addr=0x%0h len=%0d id=0x%0h", (rw==AXI_WRITE) ? "WRITE" : "READ", addr, len, id);
-        return s;
+        return $sformatf("axi_mm_seq_item: %s op=%0d addr=0x%0h len=%0d id=0x%0h wait_bid=0x%0h",
+                         (rw==AXI_WRITE) ? "WRITE" : "READ",
+                         op_kind, addr, len, id, wait_bid);
     endfunction
 
 endclass

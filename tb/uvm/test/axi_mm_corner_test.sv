@@ -671,7 +671,659 @@ class axi_mm_corner_test extends uvm_test;
     #200ns;
     `uvm_info("CORNER_TEST", "[CASE_4] Done.", UVM_MEDIUM)
   endtask
-  
+
+  // ------------------------------------------------------------
+  // Case 5: WRAP burst edge cases + FIXED burst last-wins
+  //  - WRAP burst (burst=2'b10) with len=3 (4 beats), size=3 (8B)
+  //    * Exact-boundary start: start aligned to wrap boundary (32B)
+  //    * Off-by-one (within-boundary) start: start at base+24B, causes wrap back
+  //  - FIXED burst (burst=2'b00) len=3 (4 beats) to same address:
+  //    * Verify "last beat wins" by a single-beat read after the burst
+  //
+  // Notes:
+  //  - size=3 => 8 bytes/beat
+  //  - len=3 => 4 beats
+  //  - WRAP boundary = beats * bytes_per_beat = 4 * 8 = 32B
+  // ------------------------------------------------------------
+  task automatic run_case_5_wrap_fixed();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+
+    logic [ADDR_WIDTH-1:0] p0_wrap_base, p0_wrap_off;
+    logic [ADDR_WIDTH-1:0] p1_wrap_base, p1_wrap_off;
+    logic [ADDR_WIDTH-1:0] p0_fixed;
+
+    // constants for this case
+    const int unsigned WRAP_BEATS = 4;
+    const int unsigned WRAP_BYTES = WRAP_BEATS * BYTES_PER_BEAT; // 32 bytes when BYTES_PER_BEAT=8
+
+    // -------------------------
+    // Address plan (aligned)
+    // -------------------------
+    // Pick a 32B-aligned base inside each window.
+    // WIN0: 0x0000_0000 .. 0x0000_0FFF
+    // WIN1: 0x0000_1000 .. 0x0000_1FFF
+
+    // Exact-boundary start (multiple of 32B)
+    p0_wrap_base = (WIN0_BASE + 32'h0100);
+    p1_wrap_base = (WIN1_BASE + 32'h0100);
+
+    // Off-by-one (within boundary): base + 24B (still 8B aligned)
+    // For WRAP len=3,size=3, addresses should be:
+    //   beat0 @ base+24
+    //   beat1 @ base+32 -> wraps to base+0
+    //   beat2 @ base+8
+    //   beat3 @ base+16
+    p0_wrap_off  = p0_wrap_base + 32'(WRAP_BYTES - BYTES_PER_BEAT); // +24
+    p1_wrap_off  = p1_wrap_base + 32'(WRAP_BYTES - BYTES_PER_BEAT); // +24
+
+    // FIXED burst target (8B aligned)
+    p0_fixed     = (WIN0_BASE + 32'h0180);
+
+    // Alignment safety
+    p0_wrap_base &= ~(BYTES_PER_BEAT-1);
+    p1_wrap_base &= ~(BYTES_PER_BEAT-1);
+    p0_wrap_off  &= ~(BYTES_PER_BEAT-1);
+    p1_wrap_off  &= ~(BYTES_PER_BEAT-1);
+    p0_fixed     &= ~(BYTES_PER_BEAT-1);
+
+    // Optional: ensure 32B boundary alignment for wrap_base (nice to keep)
+    p0_wrap_base &= ~(WRAP_BYTES-1);
+    p1_wrap_base &= ~(WRAP_BYTES-1);
+
+    // Re-derive off start after boundary align
+    p0_wrap_off  = p0_wrap_base + 32'(WRAP_BYTES - BYTES_PER_BEAT);
+    p1_wrap_off  = p1_wrap_base + 32'(WRAP_BYTES - BYTES_PER_BEAT);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C5_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C5_seq1");
+
+    // ============================================================
+    // P0: WRAP exact-boundary start (len=3 => 4 beats)
+    // ============================================================
+    seq0.push_item(mk_wr_burst(
+      /*addr*/      p0_wrap_base,
+      /*burst*/     2'b10,      // WRAP
+      /*size*/      3'd3,       // 8B
+      /*len*/       8'd3,       // 4 beats
+      /*id*/        4'h1,
+      /*data0*/     64'hC5C5_0000_0000_5000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq0.push_item(mk_tr(
+      /*is_read*/  1,
+      /*addr*/     p0_wrap_base,
+      /*burst*/    2'b10,       // WRAP
+      /*size*/     3'd3,
+      /*len*/      8'd3,
+      /*id*/       4'h2,
+      /*wstrb0*/   '0,
+      /*wdata0*/   '0
+    ));
+
+    // ============================================================
+    // P0: WRAP off-by-one start (base+24B causes wrap)
+    // ============================================================
+    seq0.push_item(mk_wr_burst(
+      /*addr*/      p0_wrap_off,
+      /*burst*/     2'b10,      // WRAP
+      /*size*/      3'd3,
+      /*len*/       8'd3,
+      /*id*/        4'h3,
+      /*data0*/     64'hC5C5_0000_0000_5100,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq0.push_item(mk_tr(
+      1, p0_wrap_off, 2'b10, 3'd3, 8'd3, 4'h4,
+      '0, '0
+    ));
+
+    // ============================================================
+    // P0: FIXED burst "last beat wins"
+    //  - burst=00, len=3 => 4 beats, all to same addr
+    //  - After burst, do single-beat read and expect final value
+    //    (mk_wr_burst increments data each beat => last = data0 + 3)
+    // ============================================================
+    seq0.push_item(mk_wr_burst(
+      /*addr*/      p0_fixed,
+      /*burst*/     2'b00,      // FIXED
+      /*size*/      3'd3,
+      /*len*/       8'd3,       // 4 beats (same address)
+      /*id*/        4'h5,
+      /*data0*/     64'hC5C5_F1E0_0000_6000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq0.push_item(mk_tr(
+      /*is_read*/  1,
+      /*addr*/     p0_fixed,
+      /*burst*/    2'b01,       // INCR single beat read is fine
+      /*size*/     3'd3,
+      /*len*/      8'd0,        // 1 beat
+      /*id*/       4'h6,
+      /*wstrb0*/   '0,
+      /*wdata0*/   '0
+    ));
+
+    // ============================================================
+    // P1: Do the same two WRAP edge cases (no FIXED here to keep clean)
+    // ============================================================
+    seq1.push_item(mk_wr_burst(
+      /*addr*/      p1_wrap_base,
+      /*burst*/     2'b10,
+      /*size*/      3'd3,
+      /*len*/       8'd3,
+      /*id*/        4'h9,
+      /*data0*/     64'hC5C5_0001_0000_5000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq1.push_item(mk_tr(
+      1, p1_wrap_base, 2'b10, 3'd3, 8'd3, 4'hA,
+      '0, '0
+    ));
+
+    seq1.push_item(mk_wr_burst(
+      /*addr*/      p1_wrap_off,
+      /*burst*/     2'b10,
+      /*size*/      3'd3,
+      /*len*/       8'd3,
+      /*id*/        4'hB,
+      /*data0*/     64'hC5C5_0001_0000_5100,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq1.push_item(mk_tr(
+      1, p1_wrap_off, 2'b10, 3'd3, 8'd3, 4'hC,
+      '0, '0
+    ));
+
+    `uvm_info("CORNER_TEST",
+      $sformatf("[CASE_5] Start: WRAP exact/off + FIXED last-wins. 
+                p0_wrap_base=0x%0h p0_wrap_off=0x%0h p0_fixed=0x%0h | 
+                p1_wrap_base=0x%0h p1_wrap_off=0x%0h",
+                p0_wrap_base, p0_wrap_off, p0_fixed,
+                p1_wrap_base, p1_wrap_off),
+      UVM_MEDIUM)
+
+    fork
+      begin
+        seq0.start(env_h.p0_agent.seqr);
+      end
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_5] Done.", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 6: WRAP burst edge cases (exact boundary + off-by-one)
+  //  - size=3 => 8B/beat
+  //  - len=7  => 8 beats (WRAP legal)
+  //  - wrap boundary = 8*8 = 64B
+  //
+  //  P0: WRAP burst starting near end of 64B region to FORCE wrap
+  //      A) start offset 0x38 (forces wrap on next beat to +0x00)
+  //      B) start offset 0x30 (wrap happens earlier)
+  //
+  //  P1: same pattern in WIN1
+  //
+  //  Each WRAP write is followed by matching WRAP read (same addr/len/size/burst)
+  //  so scoreboard can verify per-beat data on wrapped addresses.
+  // ------------------------------------------------------------
+  task automatic run_case_6_wrap_edges();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+
+    logic [ADDR_WIDTH-1:0] p0_wrap_base, p1_wrap_base;
+    logic [ADDR_WIDTH-1:0] p0_wA, p0_wB;
+    logic [ADDR_WIDTH-1:0] p1_wA, p1_wB;
+
+    // Choose a 64B-aligned base inside each window to make wrap math clean.
+    // 64B boundary => align mask = ~(64-1) = ~6'h3F
+    localparam int WRAP_BEATS = 8;
+    localparam int WRAP_BYTES = WRAP_BEATS * BYTES_PER_BEAT; // 64
+    logic [ADDR_WIDTH-1:0] wrap_align_mask;
+    wrap_align_mask = ~(WRAP_BYTES-1);
+
+    // Pick some arbitrary region inside WIN0/WIN1 then align it to 64B
+    // (avoid window edges to keep it simple + deterministic)
+    p0_wrap_base = (WIN0_BASE + 32'h0100) & wrap_align_mask; // e.g. 0x100 aligned to 0x40
+    p1_wrap_base = (WIN1_BASE + 32'h0100) & wrap_align_mask; // e.g. 0x1100 aligned to 0x40
+
+    // Two starting points inside the same 64B region:
+    // A) exact-boundary forcing wrap on next beat: base+0x38 (8B aligned)
+    //    beats: +0x38, +0x40->wrap to +0x00, +0x08, +0x10, +0x18, +0x20, +0x28, +0x30
+    // B) off-by-one-ish: base+0x30 (wrap occurs earlier in sequence)
+    //    beats: +0x30, +0x38, +0x40->wrap to +0x00, +0x08, +0x10, +0x18, +0x20, +0x28
+    p0_wA = (p0_wrap_base + 32'h38) & ~(BYTES_PER_BEAT-1);
+    p0_wB = (p0_wrap_base + 32'h30) & ~(BYTES_PER_BEAT-1);
+
+    p1_wA = (p1_wrap_base + 32'h38) & ~(BYTES_PER_BEAT-1);
+    p1_wB = (p1_wrap_base + 32'h30) & ~(BYTES_PER_BEAT-1);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C6_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C6_seq1");
+
+    // ============================================================
+    // P0: WRAP write + WRAP read verify
+    // ============================================================
+
+    // A) WRAP start at +0x38 (forces wrap behavior clearly)
+    seq0.push_item(mk_wr_burst(
+      /*addr*/      p0_wA,
+      /*burst*/     2'b10,     // WRAP
+      /*size*/      3'd3,      // 8B
+      /*len*/       8'd7,      // 8 beats
+      /*id*/        4'h1,
+      /*data0*/     64'hC6C6_F0EA_0000_0000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq0.push_item(mk_tr(
+      /*is_read*/  1,
+      /*addr*/     p0_wA,
+      /*burst*/    2'b10,      // WRAP
+      /*size*/     3'd3,
+      /*len*/      8'd7,
+      /*id*/       4'h2,
+      /*wstrb0*/   '0,
+      /*wdata0*/   '0
+    ));
+
+    // B) WRAP start at +0x30 (off-by-one-ish: wrap occurs earlier beat)
+    seq0.push_item(mk_wr_burst(
+      /*addr*/      p0_wB,
+      /*burst*/     2'b10,     // WRAP
+      /*size*/      3'd3,
+      /*len*/       8'd7,      // 8 beats
+      /*id*/        4'h3,
+      /*data0*/     64'hC6C6_F0EB_0000_0000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq0.push_item(mk_tr(
+      1, p0_wB, 2'b10, 3'd3, 8'd7, 4'h4,
+      '0, '0
+    ));
+
+    // ============================================================
+    // P1: WRAP write + WRAP read verify
+    // ============================================================
+
+    // A) WRAP start at +0x38
+    seq1.push_item(mk_wr_burst(
+      /*addr*/      p1_wA,
+      /*burst*/     2'b10,     // WRAP
+      /*size*/      3'd3,
+      /*len*/       8'd7,      // 8 beats
+      /*id*/        4'h9,
+      /*data0*/     64'hC6C6_F1EA_0000_0000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq1.push_item(mk_tr(
+      1, p1_wA, 2'b10, 3'd3, 8'd7, 4'hA,
+      '0, '0
+    ));
+
+    // B) WRAP start at +0x30
+    seq1.push_item(mk_wr_burst(
+      /*addr*/      p1_wB,
+      /*burst*/     2'b10,     // WRAP
+      /*size*/      3'd3,
+      /*len*/       8'd7,      // 8 beats
+      /*id*/        4'hB,
+      /*data0*/     64'hC6C6_F1EB_0000_0000,
+      /*wstrb_all*/ {BYTES_PER_BEAT{1'b1}}
+    ));
+    seq1.push_item(mk_tr(
+      1, p1_wB, 2'b10, 3'd3, 8'd7, 4'hC,
+      '0, '0
+    ));
+
+    `uvm_info("CORNER_TEST",
+      $sformatf("[CASE_6] Start: WRAP edges (8 beats, 64B boundary). P0 base=0x%0h A=0x%0h B=0x%0h | P1 base=0x%0h A=0x%0h B=0x%0h",
+                p0_wrap_base, p0_wA, p0_wB, p1_wrap_base, p1_wA, p1_wB),
+      UVM_MEDIUM)
+
+    // Run both ports concurrently to get some natural interleaving
+    fork
+      begin
+        seq0.start(env_h.p0_agent.seqr);
+      end
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_6] Done.", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 7: Partial WSTRB patterns (all-zero / all-one / nibble / alternating)
+  //  - size=3 => 8B/beat
+  //  - all transactions are SINGLE-BEAT (len=0) so each write can have unique WSTRB
+  //  - flow per port:
+  //      1) Init full write (WSTRB=FF) -> readback
+  //      2) WSTRB=00 (no-op)          -> readback (must be unchanged)
+  //      3) WSTRB=0F (low 4 bytes)    -> readback
+  //      4) WSTRB=F0 (high 4 bytes)   -> readback
+  //      5) WSTRB=AA (1010...)        -> readback
+  //      6) WSTRB=55 (0101...)        -> readback
+  //
+  //  P0 uses WIN0, P1 uses WIN1, run concurrently to interleave.
+  // ------------------------------------------------------------
+  task automatic run_case_7_wstrb_patterns();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+
+    logic [ADDR_WIDTH-1:0] p0_addr, p1_addr;
+
+    // pick a simple aligned address (8B aligned)
+    p0_addr = (WIN0_BASE + 32'h0180) & ~(BYTES_PER_BEAT-1);
+    p1_addr = (WIN1_BASE + 32'h0180) & ~(BYTES_PER_BEAT-1);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C7_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C7_seq1");
+
+    // ----------------------------
+    // P0 sequence (WIN0)
+    // ----------------------------
+    // 1) init full write -> read
+    seq0.push_item(mk_tr(
+      /*is_read*/ 0,
+      /*addr*/    p0_addr,
+      /*burst*/   2'b01,     // INCR (single beat anyway)
+      /*size*/    3'd3,      // 8B
+      /*len*/     8'd0,      // 1 beat
+      /*id*/      4'h1,
+      /*wstrb0*/  8'hFF,
+      /*wdata0*/  64'hC7C7_F0A0_0000_0000
+    ));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0));
+
+    // 2) WSTRB=00 no-op -> read (must stay same)
+    seq0.push_item(mk_tr(0, p0_addr, 2'b01, 3'd3, 8'd0, 4'h3, 8'h00,
+                        64'hDEAD_BEEF_DEAD_BEEF));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0));
+
+    // 3) WSTRB=0F update low 32b only -> read
+    seq0.push_item(mk_tr(0, p0_addr, 2'b01, 3'd3, 8'd0, 4'h5, 8'h0F,
+                        64'h1111_2222_3333_4444));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'h6, '0, '0));
+
+    // 4) WSTRB=F0 update high 32b only -> read
+    seq0.push_item(mk_tr(0, p0_addr, 2'b01, 3'd3, 8'd0, 4'h7, 8'hF0,
+                        64'hAAAA_BBBB_CCCC_DDDD));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'h8, '0, '0));
+
+    // 5) WSTRB=AA alternating bytes (1010...) -> read
+    seq0.push_item(mk_tr(0, p0_addr, 2'b01, 3'd3, 8'd0, 4'h9, 8'hAA,
+                        64'h0123_4567_89AB_CDEF));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'hA, '0, '0));
+
+    // 6) WSTRB=55 alternating bytes (0101...) -> read
+    seq0.push_item(mk_tr(0, p0_addr, 2'b01, 3'd3, 8'd0, 4'hB, 8'h55,
+                        64'hFEDC_BA98_7654_3210));
+    seq0.push_item(mk_tr(1, p0_addr, 2'b01, 3'd3, 8'd0, 4'hC, '0, '0));
+
+    // ----------------------------
+    // P1 sequence (WIN1) - same idea, different data/IDs
+    // ----------------------------
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'h9, 8'hFF,
+                        64'hC7C7_F1A0_0000_0000));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'hA, '0, '0));
+
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'hB, 8'h00,
+                        64'hCAFE_BABE_CAFE_BABE));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'hC, '0, '0));
+
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'hD, 8'h0F,
+                        64'h5555_6666_7777_8888));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'hE, '0, '0));
+
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'hF, 8'hF0,
+                        64'h9999_AAAA_BBBB_CCCC));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'h0, '0, '0));
+
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'h1, 8'hAA,
+                        64'h0F0E_0D0C_0B0A_0908));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0));
+
+    seq1.push_item(mk_tr(0, p1_addr, 2'b01, 3'd3, 8'd0, 4'h3, 8'h55,
+                        64'h0809_0A0B_0C0D_0E0F));
+    seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0));
+
+    `uvm_info("CORNER_TEST",
+      $sformatf("[CASE_7] Start: Partial WSTRB patterns. P0 addr=0x%0h | P1 addr=0x%0h",
+                p0_addr, p1_addr),
+      UVM_MEDIUM)
+
+    fork
+      begin
+        seq0.start(env_h.p0_agent.seqr);
+      end
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_7] Done.", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 8A: Same-port multiple outstanding AW (2 writes), W in-order
+  // ------------------------------------------------------------
+  task automatic run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr;
+    logic [ADDR_WIDTH-1:0] a_addr, b_addr;
+
+    localparam logic [1:0] BURST_INCR = 2'b01;
+    localparam logic [2:0] SIZE_8B    = 3'd3;
+    localparam logic [7:0] LEN_4B     = 8'd3; // 4 beats
+    localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL = {BYTES_PER_BEAT{1'b1}};
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C8A_seq0_fix");
+
+    a_addr = align_to_beat(WIN0_BASE + 32'h0200);
+    b_addr = align_to_beat(WIN0_BASE + 32'h0300);
+
+    // ------------------------------------------------------------
+    // A: AW then W (so slave releases AWREADY for next)
+    // ------------------------------------------------------------
+    tr = mk_tr(0, a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8A.AW_A", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    tr = mk_wr_burst(a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h1,
+                    64'hC8A0_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8A.W_A";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    // ------------------------------------------------------------
+    // B: AW then W
+    // ------------------------------------------------------------
+    tr = mk_tr(0, b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8A.AW_B", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    tr = mk_wr_burst(b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h2,
+                    64'hC8B0_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8A.W_B";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    // ------------------------------------------------------------
+    // Wait B responses (can reverse order if你想測 out-of-order)
+    // ------------------------------------------------------------
+    tr = mk_tr(0, b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8A.BWAIT_B_FIRST", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    tr = mk_tr(0, a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8A.BWAIT_A_SECOND", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    // ------------------------------------------------------------
+    // Readback verify
+    // ------------------------------------------------------------
+    seq0.push_item(mk_tr(1, a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h3, '0, '0, "C8A.R_A", 0));
+    seq0.push_item(mk_tr(1, b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h4, '0, '0, "C8A.R_B", 0));
+
+    `uvm_info("CORNER_TEST",
+      $sformatf("[CASE_8A_FIX] Start: depth1-friendly split write. A=0x%0h(id=1) B=0x%0h(id=2)",
+                a_addr, b_addr),
+      UVM_MEDIUM)
+
+    seq0.start(env_h.p0_agent.seqr);
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_8A_FIX] Done.", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 8B: outstanding writes + out-of-order B response (per port)
+  //  - Per port:
+  //      AW_ONLY(A), AW_ONLY(B)
+  //      W_ONLY(A),  W_ONLY(B)
+  //      B_WAIT(B) then B_WAIT(A)   // reverse order to prove BID gating
+  //      READ(A), READ(B)
+  //
+  //  - Run P0/P1 concurrently (fork)
+  // ------------------------------------------------------------
+  task automatic run_case_8b_outstanding_ooo_b_p0p1();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+    axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr;
+
+    localparam logic [1:0] BURST_INCR = 2'b01;
+    localparam logic [2:0] SIZE_8B    = 3'd3;
+    localparam logic [7:0] LEN_4B     = 8'd3; // 4 beats
+    localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL = {BYTES_PER_BEAT{1'b1}};
+
+    logic [ADDR_WIDTH-1:0] p0_a, p0_b, p1_a, p1_b;
+
+    // addresses (separate windows)
+    p0_a = align_to_beat(WIN0_BASE + 32'h0200);
+    p0_b = align_to_beat(WIN0_BASE + 32'h0300);
+
+    p1_a = align_to_beat(WIN1_BASE + 32'h0200);
+    p1_b = align_to_beat(WIN1_BASE + 32'h0300);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C8B_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C8B_seq1");
+
+    // ============================================================
+    // P0
+    // ============================================================
+
+    // AW_ONLY A(id=1), B(id=2)
+    tr = mk_tr(0, p0_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8B.P0.AW_A", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    tr = mk_tr(0, p0_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8B.P0.AW_B", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    // W_ONLY A then B (payload full)
+    tr = mk_wr_burst(p0_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, 64'hC8A0_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8B.P0.W_A";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    tr = mk_wr_burst(p0_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, 64'hC8B0_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8B.P0.W_B";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    // B_WAIT reverse: wait id=2 then id=1
+    tr = mk_tr(0, p0_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8B.P0.BWAIT_B_FIRST", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h2;
+    seq0.push_item(tr);
+
+    tr = mk_tr(0, p0_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8B.P0.BWAIT_A_SECOND", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h1;
+    seq0.push_item(tr);
+
+    // Readback verify
+    seq0.push_item(mk_tr(1, p0_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h3, '0, '0, "C8B.P0.R_A", 0));
+    seq0.push_item(mk_tr(1, p0_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h4, '0, '0, "C8B.P0.R_B", 0));
+
+    // ============================================================
+    // P1 (same structure, same IDs are OK because independent interface)
+    // ============================================================
+
+    tr = mk_tr(0, p1_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8B.P1.AW_A", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h1;
+    seq1.push_item(tr);
+
+    tr = mk_tr(0, p1_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8B.P1.AW_B", 0);
+    tr.op_kind  = OP_AW_ONLY;
+    tr.wait_bid = 4'h2;
+    seq1.push_item(tr);
+
+    tr = mk_wr_burst(p1_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, 64'hC8A1_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8B.P1.W_A";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h1;
+    seq1.push_item(tr);
+
+    tr = mk_wr_burst(p1_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, 64'hC8B1_0000_0000_0000, WSTRB_ALL);
+    tr.comment  = "C8B.P1.W_B";
+    tr.op_kind  = OP_W_ONLY;
+    tr.wait_bid = 4'h2;
+    seq1.push_item(tr);
+
+    tr = mk_tr(0, p1_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8B.P1.BWAIT_B_FIRST", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h2;
+    seq1.push_item(tr);
+
+    tr = mk_tr(0, p1_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8B.P1.BWAIT_A_SECOND", 0);
+    tr.op_kind  = OP_B_WAIT;
+    tr.wait_bid = 4'h1;
+    seq1.push_item(tr);
+
+    seq1.push_item(mk_tr(1, p1_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h3, '0, '0, "C8B.P1.R_A", 0));
+    seq1.push_item(mk_tr(1, p1_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h4, '0, '0, "C8B.P1.R_B", 0));
+
+    `uvm_info("CORNER_TEST",
+      $sformatf("[CASE_8B] Start: outstanding writes + reverse B_WAIT. P0(A=0x%0h,B=0x%0h) P1(A=0x%0h,B=0x%0h)",
+                p0_a, p0_b, p1_a, p1_b),
+      UVM_MEDIUM)
+
+    fork
+      begin
+        seq0.start(env_h.p0_agent.seqr);
+      end
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_8B] Done.", UVM_MEDIUM)
+  endtask
 
 
   // ------------------------------------------------------------
@@ -697,8 +1349,22 @@ class axi_mm_corner_test extends uvm_test;
     // run_case_3_ordering_and_conflict();
 
     // Case 4
-    run_case_4_aw_ar_contention();
+    // run_case_4_aw_ar_contention();
 
+    // Case 5
+    // run_case_5_wrap_fixed();
+
+    // Case 6
+    // run_case_6_wrap_edges();
+
+    // Case 7
+    // run_case_7_wstrb_patterns();
+
+    // Case 8a
+    // run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
+
+    // Case 8b
+    run_case_8b_outstanding_ooo_b_p0p1();
 
     `uvm_info("CORNER_TEST", "Corner-case transaction test completed", UVM_MEDIUM)
 

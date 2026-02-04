@@ -7,9 +7,11 @@ import uvm_pkg::*;
 // -------------------------------------------------------------------------
 // AXI-MM Monitor - cb_monitor version
 // - Uses axi_mm_if.mp_monitor + cb_monitor for all sampling
-// - Robust to early-B (stores B then completes after W beats done)
+// - Robust to early-B and late-B:
+//   * W has no ID => W ordering strictly follows AW head
+//   * On WLAST (W complete), pop head immediately; if B not yet seen, move to wait_b table
+//   * On B handshake, first check wait_b table; else store into write_q entry (early-B)
 // - Matches B by BID (since you have bid)
-// - W has no ID: assumes W follows AW order (AXI rule)
 // -------------------------------------------------------------------------
 class axi_mm_monitor #(
     int ADDR_WIDTH = 32,
@@ -27,9 +29,12 @@ class axi_mm_monitor #(
         int unsigned beat_cnt;
 
         // track B response even if it arrives early
-        bit                 b_seen;
-        logic [1:0]         bresp;
+        bit                  b_seen;
+        logic [1:0]          bresp;
         logic [ID_WIDTH-1:0] bid;
+
+        // NEW: W completion flag (WLAST)
+        bit                  w_done;
     } aw_tr_t;
 
     typedef struct {
@@ -38,7 +43,8 @@ class axi_mm_monitor #(
     } ar_tr_t;
 
     // Outstanding tables
-    aw_tr_t write_q[$];                      // AW/W ordered queue
+    aw_tr_t write_q[$];                      // AW/W ordered queue (W follows head)
+    aw_tr_t wait_b_s[int unsigned];          // W done but waiting for B, keyed by ID
     ar_tr_t pending_reads_s[int unsigned];   // AR/R per ID
 
     uvm_analysis_port #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap;
@@ -124,29 +130,22 @@ class axi_mm_monitor #(
     endfunction
 
     // ------------------------------------------------------------
-    // Helper: attempt to complete the head transaction if possible
-    // Rule: Only "complete" when (W beats complete) AND (B seen).
-    // If B arrived early, we keep it and complete later.
-    // NOTE: only head can be completed based on W ordering (no WID).
+    // Helper: emit a completed write transaction
     // ------------------------------------------------------------
-    task automatic try_complete_head();
+    task automatic complete_and_emit(ref aw_tr_t e);
         int unsigned expected_beats;
+        expected_beats = e.tr.len + 1;
 
-        if (write_q.size() == 0) return;
+        if (!(e.w_done && e.b_seen)) return;
 
-        expected_beats = write_q[0].tr.len + 1;
+        e.tr.bresp = e.bresp;
 
-        if ((write_q[0].beat_cnt == expected_beats) && (write_q[0].b_seen)) begin
-            write_q[0].tr.bresp = write_q[0].bresp;
+        `uvm_info("MON_WR_DONE",
+            $sformatf("WRITE completed: ID=%0d addr=0x%0h beats=%0d bresp=%0d",
+                      e.tr.id, e.tr.addr, expected_beats, e.tr.bresp),
+            UVM_LOW)
 
-            `uvm_info("MON_WR_DONE",
-                $sformatf("WRITE completed: ID=%0d addr=0x%0h beats=%0d bresp=%0d",
-                          write_q[0].tr.id, write_q[0].tr.addr, expected_beats, write_q[0].tr.bresp),
-                UVM_LOW)
-
-            ap.write(write_q[0].tr);
-            write_q.pop_front();
-        end
+        ap.write(e.tr);
     endtask
 
     // ============================================================
@@ -166,6 +165,7 @@ class axi_mm_monitor #(
 
             if (vif.cb_monitor.rst_n === 1'b0) begin
                 write_q.delete();
+                wait_b_s.delete();
                 aw_wait_cyc = 0;
                 continue;
             end
@@ -205,6 +205,7 @@ class axi_mm_monitor #(
                 tr_struct.b_seen = 0;
                 tr_struct.bresp  = '0;
                 tr_struct.bid    = '0;
+                tr_struct.w_done = 0;
 
                 write_q.push_back(tr_struct);
 
@@ -245,49 +246,81 @@ class axi_mm_monitor #(
                         UVM_HIGH)
                 end
 
+                // If WLAST, validate beat count, then pop head regardless of B
                 if (vif.cb_monitor.wlast === 1'b1) begin
+                    aw_tr_t done_e;
                     if (write_q[0].beat_cnt != expected_beats) begin
                         `uvm_error("MON",
                             $sformatf("WLAST mismatch. head_id=%0d seen_beats=%0d exp_beats=%0d",
                                       write_q[0].tr.id, write_q[0].beat_cnt, expected_beats))
                     end
-                end
 
-                try_complete_head();
+                    write_q[0].w_done = 1'b1;
+
+                    // Pop head for W ordering
+                    done_e = write_q[0];
+                    write_q.pop_front();
+
+                    if (done_e.b_seen) begin
+                        complete_and_emit(done_e);
+                    end else begin
+                        int unsigned id_k = int'(done_e.tr.id);
+                        wait_b_s[id_k] = done_e;
+                    end
+                end
             end
 
             // ---------------- B capture (handshake) ----------------
             if ((vif.cb_monitor.bvalid === 1'b1) && (vif.cb_monitor.bready === 1'b1)) begin
-                int idx;
                 logic [ID_WIDTH-1:0] bid_l;
+                int unsigned id_k;
+                int idx;
 
                 bid_l = vif.cb_monitor.bid;
-                idx   = find_wr_idx_by_id(bid_l);
+                id_k  = int'(bid_l);
 
-                if (idx < 0) begin
-                    `uvm_error("MON",
-                        $sformatf("B HS for unknown BID=%0d (no matching AW yet). bresp=%0d q_depth=%0d",
-                                  bid_l, vif.cb_monitor.bresp, write_q.size()))
-                end else begin
-                    if (!write_q[idx].b_seen) begin
-                        write_q[idx].b_seen = 1;
-                        write_q[idx].bresp  = vif.cb_monitor.bresp;
-                        write_q[idx].bid    = bid_l;
+                // Case 1: W already done, waiting for B
+                if (wait_b_s.exists(id_k)) begin
+                    if (!wait_b_s[id_k].b_seen) begin
+                        wait_b_s[id_k].b_seen = 1;
+                        wait_b_s[id_k].bresp  = vif.cb_monitor.bresp;
+                        wait_b_s[id_k].bid    = bid_l;
                     end else begin
                         `uvm_error("MON",
-                            $sformatf("Duplicate B HS for BID=%0d (already seen). bresp=%0d",
+                            $sformatf("Duplicate B HS for BID=%0d (already seen in wait_b). bresp=%0d",
                                       bid_l, vif.cb_monitor.bresp))
                     end
 
-                    expected_beats = write_q[idx].tr.len + 1;
-                    if (write_q[idx].beat_cnt != expected_beats) begin
-                        `uvm_error("MON",
-                            $sformatf("B HS EARLY/INCOMPLETE. BID=%0d beats=%0d/%0d (stored; will complete after W)",
-                                      bid_l, write_q[idx].beat_cnt, expected_beats))
-                    end
+                    complete_and_emit(wait_b_s[id_k]);
+                    wait_b_s.delete(id_k);
+                end
+                // Case 2: B arrives early (W not done yet) => store into write_q entry
+                else begin
+                    idx = find_wr_idx_by_id(bid_l);
 
-                    if (idx == 0) begin
-                        try_complete_head();
+                    if (idx < 0) begin
+                        `uvm_error("MON",
+                            $sformatf("B HS for unknown BID=%0d (no matching AW yet). bresp=%0d q_depth=%0d",
+                                      bid_l, vif.cb_monitor.bresp, write_q.size()))
+                    end else begin
+                        if (!write_q[idx].b_seen) begin
+                            write_q[idx].b_seen = 1;
+                            write_q[idx].bresp  = vif.cb_monitor.bresp;
+                            write_q[idx].bid    = bid_l;
+                        end else begin
+                            `uvm_error("MON",
+                                $sformatf("Duplicate B HS for BID=%0d (already seen). bresp=%0d",
+                                          bid_l, vif.cb_monitor.bresp))
+                        end
+
+                        // Early-B is allowed; optional info
+                        expected_beats = write_q[idx].tr.len + 1;
+                        if (write_q[idx].beat_cnt != expected_beats) begin
+                            `uvm_info("MON_B_EARLY",
+                                $sformatf("B arrived early (stored). BID=%0d beats=%0d/%0d",
+                                          bid_l, write_q[idx].beat_cnt, expected_beats),
+                                UVM_LOW)
+                        end
                     end
                 end
             end

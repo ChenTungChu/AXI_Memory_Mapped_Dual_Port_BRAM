@@ -1,0 +1,42 @@
+# =========================
+# QuestaSim / ModelSim
+# =========================
+
+# Work library
+work/
+work_*/
+
+# Optimization output
+@_opt/
+*/@_opt/
+
+# Waveform database
+*.wlf
+wlft*
+
+# Transcript / logs
+transcript
+*.log
+
+# Temporary / backup files
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# =========================
+# Optional: editor / IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Optional: Python / venv
+# =========================
+__pycache__/
+*.pyc
+venv/
