@@ -1,76 +1,94 @@
 //---------------------------------------------------------------------
-// Coverage Scoreboard / Coverage Collector for AXI-MM
+// Coverage Scoreboard / Coverage Collector for AXI-MM (2-IMP CLEAN)
+// - Exposes TWO analysis_imps: analysis_imp_p0 / analysis_imp_p1
+// - Uses unique uvm_analysis_imp_decl suffix to avoid typedef collisions
 //---------------------------------------------------------------------
-
 `ifndef AXI_MM_COV_SCOREBOARD_SV
 `define AXI_MM_COV_SCOREBOARD_SV
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
-import axi_mm_pkg::*;  
 
-class axi_mm_cov_scoreboard extends uvm_component;
-    `uvm_component_utils(axi_mm_cov_scoreboard)
+// IMPORTANT:
+// Do NOT use _p0/_p1 here because other files (e.g. axi_mm_scoreboard)
+// already declared them inside the same package compile scope.
+`uvm_analysis_imp_decl(_cov_p0)
+`uvm_analysis_imp_decl(_cov_p1)
 
-    uvm_analysis_imp #(axi_mm_seq_item, axi_mm_cov_scoreboard) analysis_export;
+class axi_mm_cov_scoreboard #(
+    int ADDR_WIDTH = 32,
+    int DATA_WIDTH = 64,
+    int ID_WIDTH   = 4
+) extends uvm_component;
 
-    //------------------------------------------------------------
-    // Dummy clock for optional clocked covergroups
-    //------------------------------------------------------------
-    logic clk;
+  `uvm_component_param_utils(axi_mm_cov_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH))
 
-    //------------------------------------------------------------
-    // Covergroup sample variables
-    //------------------------------------------------------------
-    bit [31:0] addr_cp;
-    bit        rw_cp;
+  typedef axi_mm_cov_scoreboard#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) this_t;
 
-    //------------------------------------------------------------
-    // Embedded Covergroup Declaration
-    //------------------------------------------------------------
-    // Note:
-    // - This covergroup does not use an event, because sampling
-    //   is performed manually in the sample() function.
-    // - option.per_instance is recommended to distinguish multiple
-    //   scoreboard instances in coverage reports.
-    covergroup cg;
-        option.per_instance = 1;
-        coverpoint addr_cp;
-        coverpoint rw_cp;
-    endgroup
+  // Two sinks (field names match your ENV expectation)
+  uvm_analysis_imp_cov_p0 #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), this_t) analysis_imp_p0;
+  uvm_analysis_imp_cov_p1 #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH), this_t) analysis_imp_p1;
 
-    //------------------------------------------------------------
-    // Constructor
-    //------------------------------------------------------------
-    function new(string name = "cov_scoreboard", uvm_component parent = null);
-        super.new(name, parent);
-        clk = 0;
-        cg = new();  // Instantiate embedded covergroup
-        analysis_export = new("analysis_export", this);
-    endfunction
+  // Sample variables
+  logic [ADDR_WIDTH-1:0] addr_cp;
+  bit                    rw_cp;
+  logic [ID_WIDTH-1:0]   id_cp;
+  logic [7:0]            len_cp;
+  logic [2:0]            size_cp;
+  logic [1:0]            burst_cp;
+  int unsigned           src_port_cp; // 0=p0, 1=p1
 
-    //------------------------------------------------------------
-    // Write 
-    //------------------------------------------------------------
-    function void write(axi_mm_seq_item tr);
-        sample(tr);
-    endfunction
+  covergroup cg;
+    option.per_instance = 1;
 
-    //------------------------------------------------------------
-    // Sample a transaction
-    //------------------------------------------------------------
-    function void sample(axi_mm_seq_item tr);
-        addr_cp = tr.addr;
-        rw_cp   = tr.rw;
-        cg.sample();  // Manually trigger covergroup sampling
-    endfunction
+    cp_src   : coverpoint src_port_cp { bins p0 = {0}; bins p1 = {1}; }
+    cp_rw    : coverpoint rw_cp;
+    cp_addr  : coverpoint addr_cp;
+    cp_id    : coverpoint id_cp;
+    cp_len   : coverpoint len_cp;
+    cp_size  : coverpoint size_cp;
+    cp_burst : coverpoint burst_cp;
 
-    //------------------------------------------------------------
-    // Return coverage percentage
-    //------------------------------------------------------------
-    function real get_coverage();
-        return cg.get_coverage();
-    endfunction
+    x_src_rw   : cross cp_src, cp_rw;
+    x_rw_burst : cross cp_rw, cp_burst;
+    x_rw_size  : cross cp_rw, cp_size;
+    x_rw_len   : cross cp_rw, cp_len;
+  endgroup
+
+  function new(string name="cov_scoreboard_h", uvm_component parent=null);
+    super.new(name, parent);
+    cg = new();
+    analysis_imp_p0 = new("analysis_imp_p0", this);
+    analysis_imp_p1 = new("analysis_imp_p1", this);
+  endfunction
+
+  // uvm_analysis_imp_decl(_cov_p0) expects write_cov_p0(...)
+  function void write_cov_p0(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
+    do_sample(tr, 0);
+  endfunction
+
+  // uvm_analysis_imp_decl(_cov_p1) expects write_cov_p1(...)
+  function void write_cov_p1(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
+    do_sample(tr, 1);
+  endfunction
+
+  function void do_sample(
+      axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr,
+      int unsigned src_port
+  );
+    src_port_cp = src_port;
+    addr_cp     = tr.addr;
+    rw_cp       = tr.rw;
+    id_cp       = tr.id;
+    len_cp      = tr.len;
+    size_cp     = tr.size;
+    burst_cp    = tr.burst;
+    cg.sample();
+  endfunction
+
+  function real get_coverage();
+    return cg.get_coverage();
+  endfunction
 
 endclass : axi_mm_cov_scoreboard
 

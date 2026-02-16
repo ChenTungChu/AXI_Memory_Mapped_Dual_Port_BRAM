@@ -6,78 +6,80 @@ import uvm_pkg::*;
 `include "uvm_macros.svh"
 import axi_mm_pkg::*;
 
-// ------------------------------------------------------------
-// NOTE:
-//  - Test is NOT parameterized (UVM factory requirement)
-//  - Parameters are fixed here and passed to env / seq_item
-// ------------------------------------------------------------
 class axi_mm_smoke_test extends uvm_test;
+  `uvm_component_utils(axi_mm_smoke_test)
 
-    `uvm_component_utils(axi_mm_smoke_test)
+  localparam int ADDR_WIDTH = 32;
+  localparam int DATA_WIDTH = 64;
+  localparam int ID_WIDTH   = 4;
 
-    // ------------------------------------------------------------
-    // Local parameters (test-level constants)
-    // ------------------------------------------------------------
-    localparam int ADDR_WIDTH = 32;
-    localparam int DATA_WIDTH = 64;
-    localparam int ID_WIDTH   = 4;
+  // NOTE: use type-parameter syntax with NO space before '#'
+  axi_mm_env#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
-    // ------------------------------------------------------------
-    // Environment handle
-    // ------------------------------------------------------------
-    axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
+  function new(string name = "axi_mm_smoke_test", uvm_component parent = null);
+    super.new(name, parent);
+  endfunction
 
-    // ------------------------------------------------------------
-    // Constructor
-    // ------------------------------------------------------------
-    function new(string name = "axi_mm_smoke_test", uvm_component parent = null);
-        super.new(name, parent);
-    endfunction
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    env_h = axi_mm_env#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("env_h", this);
+  endfunction
 
-    // ------------------------------------------------------------
-    // Build phase
-    // ------------------------------------------------------------
-    virtual function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-        env_h = axi_mm_env#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("env_h", this);
-    endfunction
+  virtual task run_phase(uvm_phase phase);
+    axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) seq0;
+    axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) seq1;
 
-    // ------------------------------------------------------------
-    // Run phase: simple smoke test
-    // ------------------------------------------------------------
-    virtual task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    `uvm_info("SMOKE_TEST", "Starting AXI-MM Smoke Test (Deterministic P0/P1 contention)", UVM_LOW)
 
-        //--------------------------------------------------------
-        // 1. Declare sequence
-        //--------------------------------------------------------
-        axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) seq;
+    seq0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seq0");
+    seq1 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seq1");
 
-        phase.raise_objection(this);
+    // -----------------------------
+    // Keep it SMALL but force contention
+    // -----------------------------
 
-        `uvm_info("SMOKE_TEST", "Starting AXI-MM Smoke Test", UVM_LOW)
+    // P0
+    seq0.num_transactions = 16;
+    seq0.max_beats        = 8;
+    seq0.read_percent     = 20; // bias write: exercise write arb + B path harder
 
-        // --------------------------------------------------------
-        // 2. Instantiate sequence
-        // --------------------------------------------------------
+    seq0.restrict_addr_window = 1'b1;
+    seq0.window_base          = 32'h0000_0000;
+    seq0.window_bytes         = 64;          // tiny hot window -> guaranteed conflicts
+    seq0.enable_locality      = 1'b1;
+    seq0.locality_prob        = 80;
 
-        seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seq");
+    // P1
+    seq1.num_transactions = 16;
+    seq1.max_beats        = 8;
+    seq1.read_percent     = 20;
 
-        // --------------------------------------------------------
-        // 3. Setup sequence parameters
-        // --------------------------------------------------------
-        seq.num_transactions = 4;  
-        seq.max_beats        = 16;   
-        seq.read_percent     = 50;  
+    seq1.restrict_addr_window = 1'b1;
+    seq1.window_base          = 32'h0000_0000;
+    seq1.window_bytes         = 64;
+    seq1.enable_locality      = 1'b1;
+    seq1.locality_prob        = 80;
 
-        seq.start(env_h.p0_agent.seqr);
+    // Optional: keep burst simple for smoke
+    seq0.enable_wrap          = 1'b0;
+    seq0.enable_fixed         = 1'b0;
+    seq0.enable_size_rand     = 1'b0;
+    seq0.enable_partial_wstrb = 1'b0;
 
-        // --------------------------------------------------------
-        // 4. Report
-        // --------------------------------------------------------
-        `uvm_info("SMOKE_TEST", "Sequence Finished", UVM_LOW)
+    seq1.enable_wrap          = 1'b0;
+    seq1.enable_fixed         = 1'b0;
+    seq1.enable_size_rand     = 1'b0;
+    seq1.enable_partial_wstrb = 1'b0;
 
-        phase.drop_objection(this);
-    endtask
+    fork
+      seq0.start(env_h.p0_agent.seqr);
+      seq1.start(env_h.p1_agent.seqr);
+    join
+
+    `uvm_info("SMOKE_TEST", "Smoke Test Finished", UVM_LOW)
+    phase.drop_objection(this);
+  endtask
 
 endclass : axi_mm_smoke_test
 

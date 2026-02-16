@@ -1,4 +1,6 @@
 // File: tb/interface/axi_mm_if.sv
+`ifndef AXI_MM_IF_SV
+`define AXI_MM_IF_SV
 `timescale 1ns/1ps
 
 interface axi_mm_if #(
@@ -67,10 +69,13 @@ interface axi_mm_if #(
     // ------------------------------------------------------------
     // Driver clocking block (MASTER)
     // - drives request channels
-    // - samples response channels
+    // - samples response channels + rst_n
     // ------------------------------------------------------------
     clocking cb_master @(posedge clk);
         default input #1step output #0;
+
+        // sample reset
+        input rst_n;
 
         // drive
         output awid, awaddr, awlen, awsize, awburst, awvalid;
@@ -87,8 +92,7 @@ interface axi_mm_if #(
 
     // ------------------------------------------------------------
     // Monitor clocking block
-    // - **ALL INPUTS**
-    // - monitor NEVER drives signals
+    // - ALL INPUTS
     // ------------------------------------------------------------
     clocking cb_monitor @(posedge clk);
         default input #1step;
@@ -135,3 +139,5 @@ interface axi_mm_if #(
     );
 
 endinterface : axi_mm_if
+
+`endif

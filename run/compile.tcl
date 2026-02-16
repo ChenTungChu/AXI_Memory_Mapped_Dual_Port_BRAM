@@ -14,6 +14,8 @@ set INC_DIRS "+incdir+../tb/interface \
               +incdir+../tb/uvm/sequencer \
               +incdir+../tb/uvm/seq \
               +incdir+../tb/uvm/agent \
+              +incdir+../tb/reset \
+              +incdir+../tb/commit \
               +incdir+../tb/uvm/cov \
               +incdir+../tb/uvm/env \
               +incdir+../tb/uvm/test \
@@ -28,7 +30,7 @@ vlog -sv ../tb/interface/axi_mm_if.sv
 # ======================================================
 #  Compile DUT
 # ======================================================
-vlog -sv ../dut/axi_mm_dual_port_bram.sv
+vlog -sv -timescale 1ns/1ps +acc $INC_DIRS ../dut/axi_mm_dual_port_bram.sv
 # vlog -sv ../tb/axi/axi_mm_dummy_slave.sv
 
 

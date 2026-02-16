@@ -39,15 +39,15 @@ class axi_mm_seq_item #(
     rand logic [2:0]             size;   // log2(bytes)
     rand logic [1:0]             burst;  // 00 FIXED, 01 INCR, 10 WRAP
 
-    // payloads (rand)
+    // payloads (WRITE only)
     rand logic [DATA_WIDTH-1:0]        data_beats[];
     rand logic [(BYTES_PER_BEAT)-1:0]  wstrb_beats[];
 
-    // NEW: split transaction controls
+    // split transaction controls
     rand axi_mm_op_kind_e         op_kind;
     rand logic [ID_WIDTH-1:0]     wait_bid;
 
-    // response fields (non-rand, filled by driver)
+    // response fields (non-rand, filled by driver/monitor)
     logic [DATA_WIDTH-1:0]        rdata_beats[];
     logic [1:0]                   rresp_beats[];
     logic [1:0]                   bresp;
@@ -57,17 +57,28 @@ class axi_mm_seq_item #(
     // --------------------------
     // Constraints
     // --------------------------
+    // IMPORTANT:
+    // - For READ: do NOT force write payload arrays to exist.
+    // - For WRITE: must have payload arrays sized to beats.
     constraint c_array_size {
-        data_beats.size()  == (len + 1);
-        wstrb_beats.size() == (len + 1);
+        if (rw == AXI_WRITE) {
+            data_beats.size()  == (len + 1);
+            wstrb_beats.size() == (len + 1);
+        } else {
+            data_beats.size()  == 0;
+            wstrb_beats.size() == 0;
+        }
     }
 
     constraint c_size_default { soft size == $clog2(BYTES_PER_BEAT); }
     constraint c_burst_dist   { soft burst dist { 2'b01 := 90, 2'b10 := 10 }; }
     constraint c_addr_align   { soft addr % BYTES_PER_BEAT == 0; }
 
+    // default strobe all-1 for WRITE beats
     constraint c_wstrb_default {
-        foreach (wstrb_beats[i]) soft wstrb_beats[i] == {BYTES_PER_BEAT{1'b1}};
+        if (rw == AXI_WRITE) {
+            foreach (wstrb_beats[i]) soft wstrb_beats[i] == {BYTES_PER_BEAT{1'b1}};
+        }
     }
 
     // keep legacy behavior unless explicitly overridden
@@ -88,31 +99,54 @@ class axi_mm_seq_item #(
         op_kind  = OP_FULL;
         wait_bid = '0;
         bresp    = 2'b00;
+
+        // start empty; allocation happens via post_randomize() or set_beats_len()
+        data_beats  = new[0];
+        wstrb_beats = new[0];
+        rdata_beats = new[0];
+        rresp_beats = new[0];
     endfunction
 
     // --------------------------
-    // Post-Randomize: Allocate response arrays
+    // Post-Randomize: Allocate response arrays safely
+    // - Do NOT clobber arrays if already the correct size
     // --------------------------
     function void post_randomize();
-        int unsigned beats = len + 1;
-        rdata_beats = new[beats];
-        rresp_beats = new[beats];
+        int unsigned beats;
+        beats = len + 1;
+
+        // READ/WRITE both should have response arrays sized to beats
+        if (rdata_beats.size() != beats) rdata_beats = new[beats];
+        if (rresp_beats.size() != beats) rresp_beats = new[beats];
     endfunction
 
     // --------------------------
     // Helper: Manual allocation (for non-randomized usage)
+    // - WRITE: allocate payload + response arrays
+    // - READ : allocate only response arrays; payload arrays kept empty
     // --------------------------
-    function void set_beats_len(int len);
-        assert (len >= 0)
-        else `uvm_fatal("SEQ_ITEM", "len < 0 in set_beats_len");
+    function void set_beats_len(int beats_len_0based);
+        int unsigned beats;
 
-        data_beats  = new[len + 1];
-        wstrb_beats = new[len + 1];
-        rdata_beats = new[len + 1];
-        rresp_beats = new[len + 1];
+        if (beats_len_0based < 0)
+            `uvm_fatal("SEQ_ITEM", "len < 0 in set_beats_len")
 
-        foreach (data_beats[i]) data_beats[i] = '0;
-        foreach (wstrb_beats[i]) wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+        beats = beats_len_0based + 1;
+
+        // Allocate response arrays always
+        rdata_beats = new[beats];
+        rresp_beats = new[beats];
+
+        // Allocate payload only if WRITE
+        if (rw == AXI_WRITE) begin
+            data_beats  = new[beats];
+            wstrb_beats = new[beats];
+            foreach (data_beats[i])  data_beats[i]  = '0;
+            foreach (wstrb_beats[i]) wstrb_beats[i] = {BYTES_PER_BEAT{1'b1}};
+        end else begin
+            data_beats  = new[0];
+            wstrb_beats = new[0];
+        end
     endfunction
 
     // --------------------------
@@ -128,11 +162,16 @@ class axi_mm_seq_item #(
         printer.print_field("burst", burst, $bits(burst), UVM_BIN);
         printer.print_int("op_kind", op_kind, 32, UVM_DEC);
         printer.print_field("wait_bid", wait_bid, $bits(wait_bid), UVM_HEX);
+        printer.print_field("bresp", bresp, $bits(bresp), UVM_BIN);
 
         if (data_beats.size() > 0)
             printer.print_field("data[0]", data_beats[0], $bits(data_beats[0]), UVM_HEX);
         if (wstrb_beats.size() > 0)
             printer.print_field("wstrb[0]", wstrb_beats[0], BYTES_PER_BEAT, UVM_BIN);
+        if (rdata_beats.size() > 0)
+            printer.print_field("rdata[0]", rdata_beats[0], $bits(rdata_beats[0]), UVM_HEX);
+        if (rresp_beats.size() > 0)
+            printer.print_field("rresp[0]", rresp_beats[0], $bits(rresp_beats[0]), UVM_BIN);
     endfunction
 
     virtual function void do_copy(uvm_object rhs);
@@ -152,12 +191,14 @@ class axi_mm_seq_item #(
         this.op_kind     = rhs_.op_kind;
         this.wait_bid    = rhs_.wait_bid;
 
+        // payload arrays
         this.data_beats = new[rhs_.data_beats.size()];
         foreach (this.data_beats[i]) this.data_beats[i] = rhs_.data_beats[i];
 
         this.wstrb_beats = new[rhs_.wstrb_beats.size()];
         foreach (this.wstrb_beats[i]) this.wstrb_beats[i] = rhs_.wstrb_beats[i];
 
+        // response arrays
         this.rdata_beats = new[rhs_.rdata_beats.size()];
         foreach (this.rdata_beats[i]) this.rdata_beats[i] = rhs_.rdata_beats[i];
 
@@ -182,6 +223,7 @@ class axi_mm_seq_item #(
         if (this.op_kind  != rhs_.op_kind)  return 0;
         if (this.wait_bid != rhs_.wait_bid) return 0;
 
+        // payload arrays
         if (this.data_beats.size() != rhs_.data_beats.size()) return 0;
         foreach (this.data_beats[i]) begin
             if (this.data_beats[i] !== rhs_.data_beats[i]) return 0;

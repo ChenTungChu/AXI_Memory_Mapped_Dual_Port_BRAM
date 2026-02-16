@@ -2,6 +2,10 @@
 `timescale 1ns/1ps
 
 `include "../interface/axi_mm_if.sv"
+`include "../reset/axi_mm_reset_if.sv"
+
+// commit interface (TB owns it)
+`include "../commit/axi_mm_commit_if.sv"
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
@@ -10,28 +14,42 @@ import axi_mm_pkg::*;
 module axi_mm_top;
 
     //------------------------------------------------------------
-    // Clock / Reset
+    // Clock
     //------------------------------------------------------------
     logic dma_clk;
     logic core_clk;
+
+    //------------------------------------------------------------
+    // Reset (DRIVEN BY reset_if / reset_agent)
+    //------------------------------------------------------------
     logic rst_n;
 
     //------------------------------------------------------------
-    // AXI-MM interfaces
+    // Interfaces
     //------------------------------------------------------------
-    axi_mm_if #(32, 64, 4, 1) dma_if  (dma_clk,  rst_n);
-    axi_mm_if #(32, 64, 4, 1) core_if (core_clk, rst_n);
+    // Reset interface (single source of truth)
+    axi_mm_reset_if reset_if_i (
+        .clk (dma_clk)
+    );
+
+    // Export reset_if's rst_n as top-level rst_n (single driver)
+    assign rst_n = reset_if_i.rst_n;
+
+    // AXI-MM interfaces use rst_n
+    axi_mm_if  #(32, 64, 4, 1) dma_if  (dma_clk,  rst_n);
+    axi_mm_if  #(32, 64, 4, 1) core_if (core_clk, rst_n);
+
+    // Commit observation interface (dma_clk domain)
+    axi_mm_commit_if #(32, 64, 4, 8) commit_if_i (
+        .clk   (dma_clk),
+        .rst_n (rst_n)
+    );
 
     //------------------------------------------------------------
     // AXI Slave selection
     //------------------------------------------------------------
 `ifdef USE_DUMMY_SLAVE
 
-    // ---------------- Dummy slave ----------------
-    // NOTE:
-    // - To use this, you MUST compile the dummy slave file in compile.tcl:
-    //   vlog -sv ../tb/axi/axi_mm_dummy_slave.sv
-    //
     axi_mm_dummy_slave #(
         .ADDR_WIDTH(32),
         .DATA_WIDTH(64),
@@ -54,26 +72,29 @@ module axi_mm_top;
 
 `else
 
-    // ---------------- DUT ----------------
-    // IMPORTANT:
-    // - RD_FIFO_DEPTH must be >= max burst beats you want to accept.
-    // - Case 5.1 uses 8 beats, so set at least 8 (use 16 for margin).
-    //
     axi_mm_dual_port_bram #(
-        .ADDR_WIDTH    (32),
-        .DATA_WIDTH    (64),
-        .ID_WIDTH      (4),
-        .DEPTH_WORDS   (1024),
-        .RD_FIFO_DEPTH (16)
-        // .STARVE_THRESHOLD(...), .ASSERT_ON_STARVE(...)  // optional
+        .ADDR_WIDTH       (32),
+        .DATA_WIDTH       (64),
+        .ID_WIDTH         (4),
+        .DEPTH_WORDS      (1024),
+
+        .RD_FIFO_DEPTH    (16),
+
+        .WR_AW_DEPTH      (4),
+        .WR_B_DEPTH       (8),
+
+        .STARVE_THRESHOLD (2000),
+        .ASSERT_ON_STARVE (1)
     ) dut (
         .dma_clk    (dma_clk),
         .dma_rst_n  (rst_n),
         .core_clk   (core_clk),
         .core_rst_n (rst_n),
 
-        .axi0_if(dma_if),
-        .axi1_if(core_if)
+        .axi0_if    (dma_if),
+        .axi1_if    (core_if),
+
+        .commit_if  (commit_if_i.mp_producer) 
     );
 
 `endif
@@ -90,30 +111,40 @@ module axi_mm_top;
     always #8  core_clk = ~core_clk;  // 62.5 MHz
 
     //------------------------------------------------------------
-    // Reset
-    //------------------------------------------------------------
-    initial begin
-        rst_n = 1'b0;
-        #50;
-        rst_n = 1'b1;
-    end
-
-    //------------------------------------------------------------
     // UVM
     //------------------------------------------------------------
     initial begin
         $dumpfile("axi_mm_top.vcd");
         $dumpvars(0, axi_mm_top);
 
-        // p0 (dma_if)
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p0_agent", "vif_m",   dma_if.mp_master);
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p0_agent", "vif_mon", dma_if.mp_monitor);
+        // --------------------------------------------------------
+        // AXI agents
+        // --------------------------------------------------------
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p0_agent", "vif_m",  dma_if.mp_master);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p0_agent", "vif_mon",dma_if.mp_monitor);
 
-        // p1 (core_if)
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p1_agent", "vif_m",   core_if.mp_master);
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p1_agent", "vif_mon", core_if.mp_monitor);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p1_agent", "vif_m",  core_if.mp_master);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p1_agent", "vif_mon",core_if.mp_monitor);
 
-        run_test();
+        // --------------------------------------------------------
+        // Reset agent
+        // --------------------------------------------------------
+        uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent", "vif_drv", reset_if_i.mp_driver);
+        uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent", "vif_mon", reset_if_i.mp_monitor);
+
+        // optional legacy key
+        uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent", "vif", reset_if_i.mp_driver);
+        uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent", "vif", reset_if_i.mp_monitor);
+
+        // --------------------------------------------------------
+        // Commit monitor
+        // --------------------------------------------------------
+        uvm_config_db#(virtual axi_mm_commit_if#(32,64,4,8).mp_monitor)::set(null, "*.commit_mon", "vif", commit_if_i.mp_monitor);
+
+        // --------------------------------------------------------
+        // Run test
+        // --------------------------------------------------------
+        run_test("axi_mm_directed_test");
     end
 
 endmodule
