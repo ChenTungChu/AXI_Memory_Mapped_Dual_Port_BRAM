@@ -72,7 +72,7 @@ class axi_mm_seq_item #(
 
     constraint c_size_default { soft size == $clog2(BYTES_PER_BEAT); }
     constraint c_burst_dist   { soft burst dist { 2'b01 := 90, 2'b10 := 10 }; }
-    constraint c_addr_align   { soft addr % BYTES_PER_BEAT == 0; }
+    constraint c_addr_align   { soft (addr % (1 << size)) == 0; }
 
     // default strobe all-1 for WRITE beats
     constraint c_wstrb_default {
@@ -86,6 +86,18 @@ class axi_mm_seq_item #(
 
     // default wait_bid == id (for B_WAIT usage)
     constraint c_wait_bid_default { soft wait_bid == id; }
+
+    // op_kind consistent with rw
+    constraint c_op_kind_rw_consistency {
+        if (op_kind inside {OP_AW_ONLY, OP_W_ONLY, OP_B_WAIT}) rw == AXI_WRITE;
+        if (op_kind inside {OP_AR_ONLY, OP_R_ONLY})            rw == AXI_READ;
+        // OP_FULL: rw can be READ or WRITE
+    }
+
+    // legal size range (not allowed to be greater than bus width)
+    constraint c_size_legal {
+        size <= $clog2(BYTES_PER_BEAT);
+    }
 
     // --------------------------
     // Constructor
@@ -148,6 +160,20 @@ class axi_mm_seq_item #(
             wstrb_beats = new[0];
         end
     endfunction
+
+    // --------------------------
+    // Helper: WRAP burst len+1 is 2^n
+    // --------------------------
+    function automatic bit is_pow2(int unsigned x);
+        return (x != 0) && ((x & (x-1)) == 0);
+    endfunction
+
+    constraint c_wrap_legal {
+        if (burst == 2'b10) {
+            is_pow2(len+1);
+            (addr % (1 << size)) == 0; // size alignment
+        }
+    }
 
     // --------------------------
     // UVM Standard Overrides

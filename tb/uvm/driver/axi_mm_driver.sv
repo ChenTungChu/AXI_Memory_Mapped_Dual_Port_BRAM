@@ -206,8 +206,7 @@ class axi_mm_driver #(
         // Non-stress default policy
         // -----------------------------
         if (!stress_enable) begin
-            // default accept responses
-            vif.cb_master.bready <= (hold_bready_high) ? 1'b1 : 1'b1;
+            vif.cb_master.bready <= 1'b1; // always accept in non-stress
             return;
         end
 
@@ -230,11 +229,18 @@ class axi_mm_driver #(
             vif.cb_master.rready <= 1'b0;
             return;
         end
-        if (hold_rready_high && !stress_enable) begin
+
+        // Non-stress: always accept
+        if (!stress_enable) begin
             vif.cb_master.rready <= 1'b1;
             return;
         end
-        if (!stress_enable) return;
+
+        // Stress mode:
+        if (hold_rready_high) begin
+            vif.cb_master.rready <= 1'b1;
+            return;
+        end
 
         if (wait_cyc >= force_ready_after) vif.cb_master.rready <= 1'b1;
         else                               vif.cb_master.rready <= roll_prob(rready_prob);
@@ -242,7 +248,7 @@ class axi_mm_driver #(
 
     task automatic maybe_wait_cycles(int unsigned max_cycles);
         int unsigned d;
-        if (!stress_enable || max_cycles == 0) return;
+        if (max_cycles == 0) return;
         d = $urandom_range(0, max_cycles);
         repeat (d) begin
             @(vif.cb_master);
@@ -821,6 +827,8 @@ class axi_mm_driver #(
             @(vif.cb_master);
             vif.cb_master.rready <= 1'b0;
         end
+
+        // make sure rready policy starts immediately
         update_rready(0);
 
         // R beats
@@ -836,10 +844,11 @@ class axi_mm_driver #(
                     return;
                 end
 
-                if ((vif.cb_master.rvalid === 1'b1) && (vif.cb_master.rready === 1'b1)) begin
+                if (vif.cb_master.rvalid && vif.cb_master.rready) begin
                     r_hs = 1;
                     tr.rdata_beats[i] = vif.cb_master.rdata;
                     tr.rresp_beats[i] = vif.cb_master.rresp;
+                    // decide next-cycle rready
                     update_rready(cyc+1);
                     break;
                 end

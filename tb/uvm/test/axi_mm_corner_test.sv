@@ -35,6 +35,66 @@ class axi_mm_corner_test extends uvm_test;
   // ------------------------------------------------------------
   axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
+  
+  // ------------------------------------------------------------
+  // Plusarg-driven case selection (Method A) - Questa safe
+  //   +CASE=5.3
+  //   +CASELIST=3.1,5.3,2
+  //   +CASE=all
+  // default: run DEFAULT_CASE only (set below)
+  // ------------------------------------------------------------
+  localparam string DEFAULT_CASE = "1";
+
+  function automatic string get_plusarg_str(string key);
+      string v;
+      if ($value$plusargs({key, "=%s"}, v)) return v;
+      return "";
+  endfunction
+
+  function automatic int str_find(input string hay, input string needle);
+      int i, j;
+      if (needle.len() == 0) return 0;
+      if (hay.len() < needle.len()) return -1;
+
+      for (i = 0; i <= hay.len()-needle.len(); i++) begin
+          for (j = 0; j < needle.len(); j++) begin
+              if (hay[i+j] != needle[j]) break;
+          end
+          if (j == needle.len()) return i;
+      end
+      return -1;
+  endfunction
+
+  function automatic bit case_enabled(string tag);
+      string one, list;
+      one  = get_plusarg_str("CASE");
+      list = get_plusarg_str("CASELIST");
+
+      // Run all
+      if ((one == "all") || (one == "ALL")) return 1;
+
+      // Single selection
+      if (one != "") return (one == tag);
+
+      // List selection (comma separated)
+      if (list != "") begin
+          string tmp;
+          tmp = {",", list, ","};
+          return (str_find(tmp, {",", tag, ","}) != -1);
+      end
+
+      // Default behavior if user didn't pass args:
+      return (tag == DEFAULT_CASE);
+  endfunction
+
+  task automatic banner_case(string cid, string title);
+    `uvm_info("CORNER_TEST",
+      $sformatf("========== RUN CASE %s : %s ==========", cid, title),
+      UVM_MEDIUM)
+  endtask
+
+
+
   // ------------------------------------------------------------
   // Local sequence: run a fixed list of pre-built transactions
   // ------------------------------------------------------------
@@ -78,9 +138,6 @@ class axi_mm_corner_test extends uvm_test;
 
   // ------------------------------------------------------------
   // Reset phase (config-only)
-  // IMPORTANT:
-  // - 不要在 reset_phase 內呼叫 env_h.do_initial_reset()
-  // - 因為 reset_monitor 的 trigger 在 run_phase 才會跑
   // ------------------------------------------------------------
   virtual task reset_phase(uvm_phase phase);
     super.reset_phase(phase);
@@ -88,11 +145,6 @@ class axi_mm_corner_test extends uvm_test;
     `uvm_info("CORNER_TEST",
               "[RESET_PHASE] config-only (initial reset will be done in run_phase)",
               UVM_MEDIUM)
-
-    // 如果你想覆寫 env knobs，可以放這裡（可選）
-    // uvm_config_db#(bit)::set(this, "env_h", "do_initial_reset", 1);
-    // uvm_config_db#(int unsigned)::set(this, "env_h", "rst_assert_cycles", 50);
-    // uvm_config_db#(int unsigned)::set(this, "env_h", "rst_deassert_cycles", 10);
   endtask
 
   // ------------------------------------------------------------
@@ -110,11 +162,17 @@ class axi_mm_corner_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Helper: disable stress mode (keep directed corner cases clean)
+  // Helper: disable stress mode
   // ------------------------------------------------------------
   task automatic cfg_driver_stress_off();
     uvm_config_db#(bit)::set(this, "env_h.p0_agent.drv", "stress_enable", 0);
     uvm_config_db#(bit)::set(this, "env_h.p1_agent.drv", "stress_enable", 0);
+  endtask
+
+  // === ADDED: enable stress mode (if your driver supports it)
+  task automatic cfg_driver_stress_on();
+    uvm_config_db#(bit)::set(this, "env_h.p0_agent.drv", "stress_enable", 1);
+    uvm_config_db#(bit)::set(this, "env_h.p1_agent.drv", "stress_enable", 1);
   endtask
 
   // ------------------------------------------------------------
@@ -125,7 +183,7 @@ class axi_mm_corner_test extends uvm_test;
   endfunction
 
   // ------------------------------------------------------------
-  // Helper: create deterministic per-beat data (useful for len>0 later)
+  // Helper: create deterministic per-beat data
   // ------------------------------------------------------------
   function automatic logic [DATA_WIDTH-1:0] beat_data_seed(
       input logic [ID_WIDTH-1:0] id,
@@ -225,6 +283,7 @@ class axi_mm_corner_test extends uvm_test;
 
     return tr;
   endfunction
+
 
   // ------------------------------------------------------------
   // Case 1: Zero-length & Single-beat bursts (LEN=0 => 1 beat)
@@ -1520,7 +1579,7 @@ class axi_mm_corner_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Case 9a:
+  // Case 9.1:
   //  - Single port (P0) mixed-ID ordering stress
   //  - Issue multiple outstanding writes with different IDs
   //  - Send all W data, then WAIT B in a permuted order (not 1->2->3)
@@ -1624,7 +1683,7 @@ class axi_mm_corner_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Case 9b: Mixed-ID ordering (P0/P1 concurrent)
+  // Case 9.2: Mixed-ID ordering (P0/P1 concurrent)
   //  - Purpose:
   //      Stress "wait by BID (count[bid])" under multi-port concurrency.
   //      Even if DUT returns B in-order, the TB will wait out-of-order by ID.
@@ -1968,13 +2027,380 @@ class axi_mm_corner_test extends uvm_test;
 
     #200ns;
 
-    `uvm_info("CORNER_TEST",
-        "[CASE_10] Done.",
-        UVM_MEDIUM)
+    `uvm_info("CORNER_TEST","[CASE_10] Done.", UVM_MEDIUM)
 
   endtask
 
+  // ============================================================
+  // === ADDED: Case 11 - MAX legal burst length (LEN=255) =======
+  //  - INCR write/read
+  //  - Keep inside a window (no boundary crossing) for clean check
+  // ============================================================
+  task automatic run_case_11_max_len_burst();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
 
+    logic [ADDR_WIDTH-1:0] p0_addr, p1_addr;
+    localparam logic [1:0] BURST_INCR = 2'b01;
+    localparam logic [2:0] SIZE_8B    = 3'd3;
+    localparam logic [7:0] LEN_MAX    = 8'd255; // 256 beats
+
+    // 256 beats * 8B = 2048B. Put it well inside 4KB window.
+    p0_addr = align_to_beat(WIN0_BASE + 32'h0400); // 0x400..0xBFF
+    p1_addr = align_to_beat(WIN1_BASE + 32'h0400);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C11_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C11_seq1");
+
+    seq0.push_item(mk_wr_burst(p0_addr, BURST_INCR, SIZE_8B, LEN_MAX, 4'h1,
+                              64'hC11_0000_0000_0000,
+                              {BYTES_PER_BEAT{1'b1}}));
+    seq0.push_item(mk_tr(1, p0_addr, BURST_INCR, SIZE_8B, LEN_MAX, 4'h2, '0, '0, "C11.P0.R.MAXLEN", 0));
+
+    seq1.push_item(mk_wr_burst(p1_addr, BURST_INCR, SIZE_8B, LEN_MAX, 4'h3,
+                              64'hC11_1000_0000_0000,
+                              {BYTES_PER_BEAT{1'b1}}));
+    seq1.push_item(mk_tr(1, p1_addr, BURST_INCR, SIZE_8B, LEN_MAX, 4'h4, '0, '0, "C11.P1.R.MAXLEN", 0));
+
+    banner_case("11", "MAX LEN=255 INCR burst write/read (within window)");
+
+    fork
+      seq0.start(env_h.p0_agent.seqr);
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_11] Done.", UVM_MEDIUM)
+  endtask
+
+  // ============================================================
+  // === Case 12 - Narrow transfer sizes (size=0/1/2/3) (Method A)
+  // ===  - AWADDR always beat-aligned (base0/base1)
+  // ===  - Lane selection is driven ONLY by WSTRB
+  // ===  - Strong offsets + brutal overlap sequences
+  // ============================================================
+  task automatic run_case_12_narrow_sizes();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+
+    logic [ADDR_WIDTH-1:0] base0, base1;
+    logic [DATA_WIDTH-1:0] seed0, seed1;
+    logic [DATA_WIDTH-1:0] wdata;
+    logic [BYTES_PER_BEAT-1:0] wmask;
+
+    base0 = align_to_beat(WIN0_BASE + 32'h0700);
+    base1 = align_to_beat(WIN1_BASE + 32'h0700);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C12_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C12_seq1");
+
+    seed0 = 64'h1212_3434_5656_7878;
+    seed1 = seed0 ^ 64'hFFFF_0000_FFFF_0000;
+
+    banner_case("12", "Narrow sizes (1B/2B/4B) lane mapping + merge (Method A + brutal overlaps)");
+
+    // ---------------- P0 ----------------
+    // seed full 8B then read
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF, seed0, "C12.P0.SEED.FULL8B"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h2, '0,    '0,    "C12.P0.R.SEED"));
+
+    // --- baseline lane mapping (A) ---
+    // 1B @ byte0
+    wmask = 8'b0000_0001; wdata = 64'h0000_0000_0000_00AA;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h3, wmask, wdata, "C12.P0.W.1B@0"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h4, '0,    '0,    "C12.P0.R.AFTER1B@0"));
+
+    // 1B @ byte3 (strong offset)
+    wmask = 8'b0000_1000; wdata = 64'h0000_0000_AA00_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h5, wmask, wdata, "C12.P0.W.1B@3"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h6, '0,    '0,    "C12.P0.R.AFTER1B@3"));
+
+    // 1B @ byte7 (MSB lane)
+    wmask = 8'b1000_0000; wdata = 64'hAA00_0000_0000_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h7, wmask, wdata, "C12.P0.W.1B@7"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h8, '0,    '0,    "C12.P0.R.AFTER1B@7"));
+
+    // 2B @ bytes[1:0]
+    wmask = 8'b0000_0011; wdata = 64'h0000_0000_0000_BEEF;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd1, 8'd0, 4'h9, wmask, wdata, "C12.P0.W.2B@0"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'hA, '0,    '0,    "C12.P0.R.AFTER2B@0"));
+
+    // 2B @ bytes[3:2] (offset 2)  <<< added
+    wmask = 8'b0000_1100; wdata = 64'h0000_0000_BEEF_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd1, 8'd0, 4'hB, wmask, wdata, "C12.P0.W.2B@2"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'hC, '0,    '0,    "C12.P0.R.AFTER2B@2"));
+
+    // 4B low dword @ bytes[3:0]
+    wmask = 8'b0000_1111; wdata = 64'h0000_0000_CAFE_BABE;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd2, 8'd0, 4'hD, wmask, wdata, "C12.P0.W.4B@0"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'hE, '0,    '0,    "C12.P0.R.AFTER4B@0"));
+
+    // 4B high dword @ bytes[7:4] (offset 4) <<< added
+    wmask = 8'b1111_0000; wdata = 64'hCAFE_BABE_0000_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd2, 8'd0, 4'hF, wmask, wdata, "C12.P0.W.4B@4"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h0, '0,    '0,    "C12.P0.R.AFTER4B@4"));
+
+    // --- BRUTAL ADD #1: interleaved 1B/2B/4B overwrites within same beat ---
+    // Goal: stress merge + overlap priority, including partial overlap.
+    // Start from a known baseline first:
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF, 64'h0001_0203_0405_0607, "C12.P0.BRUTAL.SEED2"));
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h2, '0,    '0,                   "C12.P0.R.SEED2"));
+
+    // Step A: 4B write low dword -> sets bytes[3:0]
+    wmask = 8'b0000_1111; wdata = 64'h0000_0000_1111_2222;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd2, 8'd0, 4'h3, wmask, wdata, "C12.P0.BRUTAL.4B@0"));
+    // Step B: 2B write bytes[3:2] overlap inside that dword
+    wmask = 8'b0000_1100; wdata = 64'h0000_0000_ABCD_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd1, 8'd0, 4'h4, wmask, wdata, "C12.P0.BRUTAL.2B@2(overlap)"));
+    // Step C: 1B write byte2 overlap again (different size same lane)
+    wmask = 8'b0000_0100; wdata = 64'h0000_0000_00EE_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h5, wmask, wdata, "C12.P0.BRUTAL.1B@2(overlap)"));
+    // Step D: 1B write byte7 (far lane) to ensure non-overlap lanes preserved
+    wmask = 8'b1000_0000; wdata = 64'hFF00_0000_0000_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h6, wmask, wdata, "C12.P0.BRUTAL.1B@7"));
+    // Readback after the whole chain
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h7, '0,    '0,    "C12.P0.R.AFTER_BRUTAL1"));
+
+    // --- BRUTAL ADD #2: different SIZE writes to the SAME byte lane ---
+    // Example: write 4B then patch one byte inside with 1B.
+    // Reset a fresh pattern first:
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd3, 8'd0, 4'h8, 8'hFF, 64'hA0A1_A2A3_A4A5_A6A7, "C12.P0.BRUTAL.SEED3"));
+    // 4B high dword
+    wmask = 8'b1111_0000; wdata = 64'hDEAD_BEEF_0000_0000;
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd2, 8'd0, 4'h9, wmask, wdata, "C12.P0.BRUTAL.4B@4"));
+    // 1B patch byte6 (inside that 4B)
+    wmask = 8'b0100_0000; wdata = 64'h00CC_0000_0000_0000; // CC at byte6 lane
+    seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'hA, wmask, wdata, "C12.P0.BRUTAL.1B@6(patch)"));
+    // Readback
+    seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'hB, '0,    '0,    "C12.P0.R.AFTER_BRUTAL2"));
+
+    // ---------------- P1 ----------------
+    // seed full 8B then read
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF, seed1, "C12.P1.SEED.FULL8B"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h2, '0,    '0,    "C12.P1.R.SEED"));
+
+    // baseline mapping + extra corners
+    wmask = 8'b0001_0000; wdata = 64'h0000_00AA_0000_0000; // 1B@4
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd0, 8'd0, 4'h3, wmask, wdata, "C12.P1.W.1B@4"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h4, '0,    '0,    "C12.P1.R.AFTER1B@4"));
+
+    wmask = 8'b1000_0000; wdata = 64'hAA00_0000_0000_0000; // 1B@7
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd0, 8'd0, 4'h5, wmask, wdata, "C12.P1.W.1B@7"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h6, '0,    '0,    "C12.P1.R.AFTER1B@7"));
+
+    wmask = 8'b0011_0000; wdata = 64'h0000_BEEF_0000_0000; // 2B@4
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd1, 8'd0, 4'h7, wmask, wdata, "C12.P1.W.2B@4"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h8, '0,    '0,    "C12.P1.R.AFTER2B@4"));
+
+    wmask = 8'b0000_1100; wdata = 64'h0000_0000_BEEF_0000; // 2B@2
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd1, 8'd0, 4'h9, wmask, wdata, "C12.P1.W.2B@2"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'hA, '0,    '0,    "C12.P1.R.AFTER2B@2"));
+
+    wmask = 8'b1111_0000; wdata = 64'hCAFE_BABE_0000_0000; // 4B@4
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd2, 8'd0, 4'hB, wmask, wdata, "C12.P1.W.4B@4"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'hC, '0,    '0,    "C12.P1.R.AFTER4B@4"));
+
+    // --- BRUTAL ADD #1 (P1): interleaved overlap chain ---
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd3, 8'd0, 4'hD, 8'hFF, 64'h1011_1213_1415_1617, "C12.P1.BRUTAL.SEED2"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'hE, '0,    '0,                   "C12.P1.R.SEED2"));
+
+    // 4B low dword
+    wmask = 8'b0000_1111; wdata = 64'h0000_0000_3333_4444;
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd2, 8'd0, 4'hF, wmask, wdata, "C12.P1.BRUTAL.4B@0"));
+    // 2B overlap bytes[1:0] (different overlap flavor vs P0)
+    wmask = 8'b0000_0011; wdata = 64'h0000_0000_0000_55AA;
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd1, 8'd0, 4'h0, wmask, wdata, "C12.P1.BRUTAL.2B@0(overlap)"));
+    // 1B patch byte1 (same lane, different size)
+    wmask = 8'b0000_0010; wdata = 64'h0000_0000_0000_CC00;
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd0, 8'd0, 4'h1, wmask, wdata, "C12.P1.BRUTAL.1B@1(patch)"));
+    // 1B write byte6 (non-overlap lane)
+    wmask = 8'b0100_0000; wdata = 64'h00EE_0000_0000_0000;
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd0, 8'd0, 4'h2, wmask, wdata, "C12.P1.BRUTAL.1B@6"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h3, '0,    '0,    "C12.P1.R.AFTER_BRUTAL1"));
+
+    // --- BRUTAL ADD #2 (P1): 4B then 1B patch inside same lane set ---
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd3, 8'd0, 4'h4, 8'hFF, 64'hB0B1_B2B3_B4B5_B6B7, "C12.P1.BRUTAL.SEED3"));
+    // 4B low dword
+    wmask = 8'b0000_1111; wdata = 64'h0000_0000_FEED_C0DE;
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd2, 8'd0, 4'h5, wmask, wdata, "C12.P1.BRUTAL.4B@0"));
+    // 1B patch byte3
+    wmask = 8'b0000_1000; wdata = 64'h0000_0000_DD00_0000; // DD at byte3
+    seq1.push_item(mk_tr(0, base1, 2'b01, 3'd0, 8'd0, 4'h6, wmask, wdata, "C12.P1.BRUTAL.1B@3(patch)"));
+    seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h7, '0,    '0,    "C12.P1.R.AFTER_BRUTAL2"));
+
+    fork
+      seq0.start(env_h.p0_agent.seqr);
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_12] Done.", UVM_MEDIUM)
+  endtask
+
+
+  // ============================================================
+  // === ADDED: Case 13 - READY/backpressure + stress ============
+  //  - Turn on stress (if enabled by +CORNER_STRESS=1)
+  //  - De-assert hold_ready_high so driver can toggle READY
+  //  - Small mixed traffic (write/read/burst) to shake ordering
+  // ============================================================
+  task automatic run_case_13_ready_backpressure_stress();
+    axi_mm_corner_list_seq seq0;
+    axi_mm_corner_list_seq seq1;
+
+    logic [ADDR_WIDTH-1:0] a0, a1;
+
+    a0 = align_to_beat(WIN0_BASE + 32'h0900);
+    a1 = align_to_beat(WIN1_BASE + 32'h0900);
+
+    seq0 = axi_mm_corner_list_seq::type_id::create("C13_seq0");
+    seq1 = axi_mm_corner_list_seq::type_id::create("C13_seq1");
+
+    // a little mix
+    seq0.push_item(mk_wr_burst(a0, 2'b01, 3'd3, 8'd7, 4'h1, 64'hC13_0A00_0000_0000, 8'hFF));
+    seq0.push_item(mk_tr(1, a0, 2'b01, 3'd3, 8'd7, 4'h2, '0, '0, "C13.P0.R.8beats", 0));
+    seq0.push_item(mk_tr(0, a0+32'h40, 2'b01, 3'd3, 8'd0, 4'h3, 8'h0F, 64'h1111_2222_3333_4444, "C13.P0.W.PARTIAL", 0));
+    seq0.push_item(mk_tr(1, a0+32'h40, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0, "C13.P0.R.PARTIAL", 0));
+
+    seq1.push_item(mk_wr_burst(a1, 2'b01, 3'd3, 8'd3, 4'h5, 64'hC13_1A00_0000_0000, 8'hFF));
+    seq1.push_item(mk_tr(1, a1, 2'b01, 3'd3, 8'd3, 4'h6, '0, '0, "C13.P1.R.4beats", 0));
+    seq1.push_item(mk_tr(0, a1+32'h20, 2'b00, 3'd3, 8'd3, 4'h7, 8'hFF, 64'hC13_F1CED_0000_0000, "C13.P1.W.FIXED.4beats", 1));
+    seq1.push_item(mk_tr(1, a1+32'h20, 2'b01, 3'd3, 8'd0, 4'h8, '0, '0, "C13.P1.R.FIXED_LAST", 0));
+
+    banner_case("13", "READY backpressure + (optional) stress");
+
+    // allow READY to wiggle (depending on driver implementation)
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress_on();
+
+    fork
+      seq0.start(env_h.p0_agent.seqr);
+      begin
+        #1ns;
+        seq1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    // restore to clean mode afterwards
+    cfg_driver_stress_off();
+    cfg_driver_hold_ready(1, 1);
+
+    #200ns;
+    `uvm_info("CORNER_TEST", "[CASE_13] Done.", UVM_MEDIUM)
+  endtask
+
+  // ============================================================
+  // === ADDED: Case 14 - "Corner Completion Suite" ============
+  //  - Run ALL required corner cases in ONE regression run
+  //  - If this case passes (scoreboard mismatches=0), you can
+  //    declare Corner Test COMPLETE.
+  // ============================================================
+  task automatic run_case_14_corner_completion_suite();
+    axi_mm_corner_list_seq seq_sanity0, seq_sanity1;
+    logic [ADDR_WIDTH-1:0] a0, a1;
+
+    banner_case("14", "CORNER COMPLETION SUITE (run all required cases once)");
+
+    // Always start from clean deterministic mode
+    cfg_driver_stress_off();
+    cfg_driver_hold_ready(1, 1);
+
+    // ---- REQUIRED CORE CASES ----
+    banner_case("1", "LEN=0 single-beat (INCR/FIXED) + WSTRB");             
+    run_case_1_single_beat();
+
+    banner_case("2", "Boundary crossing + end-of-mem");                      
+    run_case_2_boundary_edges();
+
+    banner_case("3", "Ordering/conflict + merge");                           
+    run_case_3_ordering_and_conflict();
+
+    banner_case("4", "AW/AR contention overlap");                            
+    run_case_4_aw_ar_contention();
+
+    banner_case("5", "WRAP(4beat) edges + FIXED last-wins");                 
+    run_case_5_wrap_fixed();
+
+    banner_case("6", "WRAP(8beat) edges");                                   
+    run_case_6_wrap_edges();
+
+    banner_case("7", "WSTRB patterns");                                      
+    run_case_7_wstrb_patterns();
+
+    // ---- OUTSTANDING / SPLIT / OOO RESPONSE ----
+    // 你現在有 8, 8.1, 8.2：我這裡把最關鍵的 split / ooo 都納入 suite
+    banner_case("8.1", "8A depth1-friendly split AW/W");                     
+    run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
+
+    banner_case("8.2", "8B outstanding + reverse B_WAIT");                   
+    run_case_8b_outstanding_ooo_b_p0p1();
+
+    // ---- MIXED ID ORDERING ----
+    banner_case("9.1", "9A mixed-ID ordering P0");                            
+    run_case_9a_mixed_id_ordering_p0();
+
+    banner_case("9.2", "9B mixed-ID ordering P0/P1");                         
+    run_case_9b_mixed_id_ordering_p0p1();
+
+    // ---- RESET / FLUSH DURING TRAFFIC ----
+    banner_case("10", "Reset/flush during activity");                         
+    run_case_10_reset_during_activity();
+
+    // ---- MAX LEN + NARROW SIZES ----
+    banner_case("11", "MAX LEN=255 INCR burst write/read (within window)");   
+    run_case_11_max_len_burst();
+
+    banner_case("12", "Narrow sizes (1B/2B/4B) lane mapping + merge");        
+    run_case_12_narrow_sizes();
+
+    // ---- READY BACKPRESSURE / STRESS ----
+    banner_case("13", "READY backpressure");                                  
+    run_case_13_ready_backpressure_stress();
+
+    // ---- Restore clean mode after stress ----
+    cfg_driver_stress_off();
+    cfg_driver_hold_ready(1, 1);
+
+    // ============================================================
+    // Post-suite sanity: quick write/read on both ports
+    // (helps catch "driver stuck" / "ready policy not restored")
+    // ============================================================
+    a0 = align_to_beat(WIN0_BASE + 32'h0A00);
+    a1 = align_to_beat(WIN1_BASE + 32'h0A00);
+
+    seq_sanity0 = axi_mm_corner_list_seq::type_id::create("C14_sanity_p0");
+    seq_sanity1 = axi_mm_corner_list_seq::type_id::create("C14_sanity_p1");
+
+    seq_sanity0.push_item(mk_tr(0, a0, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF,
+                                64'hC14C_0FAE_0000_0001, "C14.SAN.P0.W"));
+    seq_sanity0.push_item(mk_tr(1, a0, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0,
+                                "C14.SAN.P0.R", 0));
+
+    seq_sanity1.push_item(mk_tr(0, a1, 2'b01, 3'd3, 8'd0, 4'h3, 8'hFF,
+                                64'hC14C_1FAE_0000_0001, "C14.SAN.P1.W"));
+    seq_sanity1.push_item(mk_tr(1, a1, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0,
+                                "C14.SAN.P1.R", 0));
+
+    fork
+      seq_sanity0.start(env_h.p0_agent.seqr);
+      begin
+        #1ns;
+        seq_sanity1.start(env_h.p1_agent.seqr);
+      end
+    join
+
+    #300ns;
+
+    `uvm_info("CORNER_TEST",
+              "[CASE_14] Completion suite finished. If scoreboard FINAL RESULT is PASS => CORNER TEST COMPLETE.",
+              UVM_MEDIUM)
+  endtask
 
 
   // ------------------------------------------------------------
@@ -1988,53 +2414,39 @@ class axi_mm_corner_test extends uvm_test;
     env_h.do_initial_reset(
       phase,
       "corner_test initial reset",
-      1_000_000ns 
+      1_000_000ns
     );
 
     `uvm_info("CORNER_TEST", "Initial reset done, start traffic.", UVM_MEDIUM)
 
-    // Case1 should be clean and deterministic
+    // Default clean deterministic mode
     cfg_driver_stress_off();
     cfg_driver_hold_ready(1, 1);
 
-    // Case 1
-    // run_case_1_single_beat();
+    // ============================================================
+    // === ADDED: selected-case runner ============================
+    // ============================================================
+    if (case_enabled("1"))   begin banner_case("1",   "LEN=0 single-beat (INCR/FIXED) + WSTRB");              run_case_1_single_beat(); end
+    if (case_enabled("2"))   begin banner_case("2",   "Boundary crossing + end-of-mem");                      run_case_2_boundary_edges(); end
+    if (case_enabled("3"))   begin banner_case("3",   "Ordering/conflict + merge");                           run_case_3_ordering_and_conflict(); end
+    if (case_enabled("4"))   begin banner_case("4",   "AW/AR contention overlap");                            run_case_4_aw_ar_contention(); end
+    if (case_enabled("5"))   begin banner_case("5",   "WRAP(4beat) edges + FIXED last-wins");                 run_case_5_wrap_fixed(); end
+    if (case_enabled("6"))   begin banner_case("6",   "WRAP(8beat) edges");                                   run_case_6_wrap_edges(); end
+    if (case_enabled("7"))   begin banner_case("7",   "WSTRB patterns");                                      run_case_7_wstrb_patterns(); end
 
-    // Case 2
-    // run_case_2_boundary_edges();
+    if (case_enabled("8"))   begin banner_case("8",   "Outstanding AW depth4 + observable stall");            run_case_8_outstanding_aw_depth4_p0p1(); end
+    if (case_enabled("8.1")) begin banner_case("8.1", "8A depth1-friendly split AW/W");                       run_case_8a_multi_aw_no_interleave_fixed_for_depth1(); end
+    if (case_enabled("8.2")) begin banner_case("8.2", "8B outstanding + reverse B_WAIT");                     run_case_8b_outstanding_ooo_b_p0p1(); end
 
-    // Case 3
-    // run_case_3_ordering_and_conflict();
+    if (case_enabled("9.1")) begin banner_case("9.1", "9A mixed-ID ordering P0");                             run_case_9a_mixed_id_ordering_p0(); end
+    if (case_enabled("9.2")) begin banner_case("9.2", "9B mixed-ID ordering P0/P1");                          run_case_9b_mixed_id_ordering_p0p1(); end
 
-    // Case 4
-    // run_case_4_aw_ar_contention();
+    if (case_enabled("10"))  begin banner_case("10",  "Reset/flush during activity");                         run_case_10_reset_during_activity(); end
+    if (case_enabled("11"))  begin banner_case("11",  "MAX LEN=255 INCR burst write/read (within window)");   run_case_11_max_len_burst(); end
+    if (case_enabled("12"))  begin banner_case("12",  "Narrow sizes (1B/2B/4B) lane mapping + merge");        run_case_12_narrow_sizes(); end
+    if (case_enabled("13"))  begin banner_case("13",  "READY backpressure");                                  run_case_13_ready_backpressure_stress(); end
+    if (case_enabled("14"))  begin banner_case("14",  "Complete regression");                                 run_case_14_corner_completion_suite(); end
 
-    // Case 5
-    // run_case_5_wrap_fixed();
-
-    // Case 6
-    // run_case_6_wrap_edges();
-
-    // Case 7
-    // run_case_7_wstrb_patterns();
-
-    // Case 8a
-    // run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
-
-    // Case 8b
-    // run_case_8b_outstanding_ooo_b_p0p1();
-
-    // Case 8
-    // run_case_8_outstanding_aw_depth4_p0p1();
-
-    // Case 9a
-    // run_case_9a_mixed_id_ordering_p0();
-
-    // Case 9b
-    // run_case_9b_mixed_id_ordering_p0p1();
-
-    // Case 10
-    run_case_10_reset_during_activity();
 
     `uvm_info("CORNER_TEST", "Corner-case transaction test completed", UVM_MEDIUM)
 

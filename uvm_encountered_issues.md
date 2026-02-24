@@ -1863,7 +1863,318 @@ Requires all prior invariants to be trusted
   ```
 
 ## 日期
-2026-02-04
+2026-02-16
 
-- Goal: Pass Case 8
-- 
+- Faced Issue
+  - run.tcl無法編譯
+  ```
+  # ** Error: (vopt-13130) Failed to find design unit . 
+  # Searched libraries: 
+  # work 
+  # Optimization failed 
+  # Error loading design
+  ```
+  - 原因
+    - 我的 \ 後面有空白
+  - 解釋
+    - 如果tcl要換行, 確保 \ 是該行「最後一個字元」, \ 後面不能有任何空白
+
+## 日期
+2026-02-23
+
+- Corner Test PASSED
+  - Case 1: Zero-length & Single-beat bursts (LEN=0 => 1 beat) + WSTRB corner
+
+Configuration
+
+Dual port (P0 & P1)
+
+Burst: INCR + FIXED（WRAP 不含在此 case）
+
+Size=8B（3’d3），LEN=0（single beat）
+
+Ready always-high、stress off（deterministic）
+
+WSTRB 覆蓋：FF（full）、00（no-op）、以及 partial（例如 0x0F）
+
+Purpose
+
+驗證最基本的 READ/WRITE single-beat correctness
+
+驗證 FIXED/INCR 單拍行為
+
+驗證 scoreboard 對 WSTRB=0（必須不改變記憶體） 與 partial merge 的建模正確
+
+Case 2: Boundary crossing at window edge + end-of-memory edge
+
+Configuration
+
+Dual port (P0 & P1)
+
+P0: INCR burst 強制跨 4KB window boundary（0x0FFF → 0x1000）
+
+2-beat crossing (start 0x0FF8)
+
+4-beat crossing (start 0x0FE8)
+
+P1: single beat access at last valid beat address（0x1FF8）
+
+stress off、ready always-high（deterministic）
+
+Purpose
+
+驗證 window boundary crossing 的 address / memory mapping
+
+驗證 end-of-memory 最後一拍 address 的合法行為與 scoreboard 對應
+
+Case 3: Ordering + cross-port overwrite + partial merge (deterministic)
+
+Configuration
+
+Dual port：刻意用 共享 address A_shared
+
+P1 先做 FULL write，P0 再做 PARTIAL write（per-byte merge by WSTRB）
+
+P0 額外加同 ID ordering sanity（同一個 ID 寫兩筆，再讀回）
+
+stress off、ready always-high；用延遲確保順序 deterministic
+
+Purpose
+
+驗證 cross-port 同址覆寫時的 last-writer / per-byte merge 規則
+
+驗證同 ID ordering 的 scoreboard/driver tracking 沒問題
+
+Case 4: AW/AR contention overlap + verified burst read (forced overlap)
+
+Configuration
+
+Phase A: PRIME（先寫好 read target）
+
+Phase B: P0 發 long-ish write burst，同時 P1 early inject AR（強制 AW/AR overlap）
+
+Dual port concurrent
+
+Purpose
+
+驗證 AW/AR contention 下 driver/monitor/scoreboard 不會亂或 deadlock
+
+驗證 contention 後 readback 仍正確
+
+Case 5: WRAP(4-beat) edge cases + FIXED burst last-wins
+
+Configuration
+
+WRAP burst: len=3（4 beats）, size=8B → wrap boundary=32B
+
+exact-boundary start（32B 對齊）
+
+off-by-one style start（base+24B，強制 wrap 回 base）
+
+FIXED burst: len=3（4 beats）同址連打，最後 single-beat read 驗證 last beat wins
+
+Dual port：P0 做 WRAP + FIXED；P1 做 WRAP
+
+Purpose
+
+驗證 WRAP addressing 正確（boundary / off-by-one）
+
+驗證 FIXED burst 的 last-beat-wins 行為正確
+
+Case 6: WRAP(8-beat) edge cases (64B boundary)
+
+Configuration
+
+WRAP burst: len=7（8 beats）, size=8B → wrap boundary=64B
+
+起點選 base+0x38 與 base+0x30，強迫 wrap 發生在不同 beat
+
+Dual port concurrent，每個 WRAP write 後都做 WRAP read verify
+
+Purpose
+
+更完整覆蓋 WRAP 8-beat 的 wrap address pattern
+
+驗證 scoreboard 對 wrapped beat-by-beat address mapping 正確
+
+Case 7: Partial WSTRB patterns (00/FF/0F/F0/AA/55) single-beat
+
+Configuration
+
+Dual port，各自單拍 len=0，不同 WSTRB pattern
+
+流程：seed full write → read → WSTRB=00 no-op → read → partials → reads
+
+stress off、ready always-high
+
+Purpose
+
+系統性驗證 byte-enable merge 規則（含 no-op、半邊、高低、交錯）
+
+確認 scoreboard 對 WSTRB 模型完全一致
+
+Case 8: Outstanding AW depth4 + observable stall (bonus ordering, dual-port)
+
+Configuration
+
+Dual port concurrent
+
+目標：讓 AW backpressure/stall 在 log 可見
+
+手法：AW(A/B/C) 先塞滿 → W(A) 先送讓 DUT 產生 B → 再送 AW(D)（預期 stall）→ 再補完 W(B/C/D) → B_WAIT reverse → readback
+
+Purpose
+
+驗證 outstanding AW credit/backpressure 的行為可觀察、可推導
+
+驗證 driver 在「AW 被卡住時」仍可由背景 B collector 釋放 credit（避免死結）
+
+Case 8.1 (8A): Depth1-friendly split AW/W (single-port)
+
+Configuration
+
+Single port (P0)
+
+同一 port 做兩個 write：每筆拆成 AW_ONLY → W_ONLY
+
+之後用 B_WAIT 等 response（可 permute），再 readback verify
+
+Purpose
+
+支援 DUT 只有 depth=1（或較嚴格時序）也能測到 multi-AW 情境
+
+驗證 split-transaction（AW/W 分離）driver/scoreboard tracking 正確
+
+Case 8.2 (8B): Outstanding writes + out-of-order B_WAIT (dual-port)
+
+Configuration
+
+Dual port concurrent
+
+每個 port：AW_ONLY(A,B) → W_ONLY(A,B) → B_WAIT(B) 再 B_WAIT(A)（反序）→ readback
+
+Purpose
+
+驗證 testbench 以 BID gating 完成（而不是 FIFO order 假設）
+
+驗證多 port 同時 outstanding 的 tracking 不互相污染
+
+Case 9.1 (9A): Mixed-ID ordering stress (single-port P0)
+
+Configuration
+
+Single port (P0)
+
+3 笔不同 ID 的 write（AW_ONLY 先塞）→ W_ONLY 全送 → B_WAIT 用 permuted order（非 1→2→3）→ readback
+
+Purpose
+
+驗證 scoreboard/driver 的完成判定是「依 ID」而非 FIFO
+
+驗證 mixed-ID 下的 completion bookkeeping 穩定
+
+Case 9.2 (9B): Mixed-ID ordering concurrent (P0/P1)
+
+Configuration
+
+Dual port concurrent
+
+每 port 3 个不同 ID；B_WAIT order 不同（P0: 2→1→3，P1: 3→1→2）
+
+最後 readback verify（用不同 read IDs）
+
+Purpose
+
+驗證在 multi-port concurrency 下，ID-based completion tracking 仍正確
+
+驗證 TB 對 multi-ID、多 port 的 bookkeeping 沒 race
+
+Case 10: Reset / Flush During Activity (stable)
+
+Configuration
+
+Dual port
+
+Phase A: 大量 in-flight traffic（不 verify）
+
+Mid-flight: assert reset（當 flush 用），不 stop_sequences、不 seq.stop
+
+Phase B: reset 後重新做少量乾淨 traffic 並 verify
+
+Purpose
+
+驗證 reset/flush during activity 時 driver 能自動 abort/回到 idle
+
+驗證 reset 後 DUT/TB 進入乾淨狀態，後續 transaction 可正確 PASS
+
+Case 11: MAX legal burst length (LEN=255 => 256 beats) within window
+
+Configuration
+
+Dual port
+
+INCR write/read
+
+LEN=255（256 beats），size=8B
+
+地址選在 window 內部（避免 crossing，讓 check 乾淨）
+
+Purpose
+
+驗證最大 burst length 的 driver/monitor/scoreboard buffer 能力
+
+驗證長 burst 下 address increment、beat counting、R/W beat 對齊
+
+Case 12: Narrow transfer sizes + lane mapping + brutal overlaps (Method A)
+
+Configuration
+
+Dual port
+
+base address 固定 beat-aligned（AWADDR 對齊）
+
+size 覆蓋：1B/2B/4B/8B（size=0/1/2/3）
+
+lane selection 主要用 WSTRB 控制
+
+加入多段「brutal overlap chain」：不同 size 在同一 beat 重疊覆寫，再 readback
+
+Purpose
+
+驗證 narrow size（byte/halfword/word）對 lane mapping 的正確性
+
+驗證多次 partial overlap 的 merge priority 與 scoreboard modeling 正確
+
+強化 corner：同一 byte lane 被不同 size 多次覆寫
+
+Case 13: READY backpressure + (optional) stress
+
+Configuration
+
+Dual port small mixed traffic（write/read/burst、含 FIXED/INCR）
+
+driver 允許 READY wiggle（cfg_driver_hold_ready(0,0)）
+
+開啟 stress（若 +CORNER_STRESS=1），讓 bready/rready 等可隨機 backpressure
+
+結束後 restore：stress off、hold_ready_high=1
+
+Purpose
+
+驗證 backpressure 下 driver/monitor/scoreboard 的穩定性
+
+驗證 stall/retry/handshake 期間 ordering 不被破壞
+
+Case 14: Corner Completion Suite (one-run “all required cases” regression)
+
+Configuration
+
+在同一個 run 內依序呼叫 Case 1~13（先 deterministic，再 stress，再 restore）
+
+suite 結尾加 post-suite sanity（兩個 port 各做一次簡單 write/read）
+
+Purpose
+
+一次跑完即可宣告 corner coverage 完整（以 scoreboard mismatches=0 為準）
+
+額外用 sanity 確認 driver/stress mode 已回復到乾淨狀態，避免“測完卡住”

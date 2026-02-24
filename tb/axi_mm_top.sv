@@ -144,7 +144,7 @@ module axi_mm_top;
         // --------------------------------------------------------
         // Run test
         // --------------------------------------------------------
-        run_test("axi_mm_directed_test");
+        run_test("axi_mm_corner_test");
     end
 
 endmodule
