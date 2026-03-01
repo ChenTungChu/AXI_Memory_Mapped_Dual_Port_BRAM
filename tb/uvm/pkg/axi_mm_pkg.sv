@@ -33,8 +33,10 @@ package axi_mm_pkg;
   // Sequences
   //------------------------------------------------------------
   `include "../seq/axi_mm_seq.sv"
+  `include "../seq/axi_mm_cov_rand_seq.sv"
   // `include "../seq/axi_mm_cov_seq.sv"      // (optional/old)
   `include "../cov/axi_mm_cov_sequence.sv"
+
 
   //------------------------------------------------------------
   // Reset Agent
@@ -56,6 +58,7 @@ package axi_mm_pkg;
   //------------------------------------------------------------
   `include "../scoreboard/axi_mm_scoreboard.sv"
   `include "../cov/axi_mm_cov_scoreboard.sv"
+  `include "../cov/axi_mm_cov_subscriber.sv"
   `include "../env/axi_mm_env.sv"
 
   //------------------------------------------------------------

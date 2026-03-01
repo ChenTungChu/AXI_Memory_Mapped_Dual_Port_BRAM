@@ -111,19 +111,51 @@ interface axi_mm_if #(
     // Modports
     // ============================================================
 
-    // TB Driver
+    // ------------------------------------------------------------
+    // TB Driver (MASTER)
+    // - expose cb_master for synchronous driving
+    // - ALSO expose raw signals so TB can READ without cb-output warnings
+    // ------------------------------------------------------------
     modport mp_master (
+        input  clk, rst_n,
         clocking cb_master,
-        input  clk, rst_n
+
+        // raw signals (read/write) for driver convenience
+        output awid, awaddr, awlen, awsize, awburst, awvalid,
+        input  awready,
+
+        output wdata, wstrb, wlast, wvalid,
+        input  wready,
+
+        input  bid, bresp, bvalid,
+        output bready,
+
+        output arid, araddr, arlen, arsize, arburst, arvalid,
+        input  arready,
+
+        input  rid, rdata, rresp, rlast, rvalid,
+        output rready
     );
 
+    // ------------------------------------------------------------
     // TB Monitor
+    // - expose cb_monitor for sampling
+    // - ALSO expose raw signals (input-only) if monitor wants direct access
+    // ------------------------------------------------------------
     modport mp_monitor (
+        input  clk, rst_n,
         clocking cb_monitor,
-        input  clk, rst_n
+
+        input awid, awaddr, awlen, awsize, awburst, awvalid, awready,
+        input wdata, wstrb, wlast, wvalid, wready,
+        input bvalid, bready, bresp, bid,
+        input arid, araddr, arlen, arsize, arburst, arvalid, arready,
+        input rvalid, rready, rdata, rresp, rid, rlast
     );
 
+    // ------------------------------------------------------------
     // DUT (AXI slave)
+    // ------------------------------------------------------------
     modport mp_slave (
         input  clk, rst_n,
 

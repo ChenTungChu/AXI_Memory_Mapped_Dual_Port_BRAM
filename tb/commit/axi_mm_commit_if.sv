@@ -13,24 +13,29 @@ interface axi_mm_commit_if #(
     input logic rst_n
 );
 
-    localparam int IDW   = (ID_WIDTH > 0) ? ID_WIDTH : 1;
-    localparam int STRBW = DATA_WIDTH/8;
+    localparam int          IDW   = (ID_WIDTH > 0) ? ID_WIDTH : 1;
+    localparam int unsigned STRBW = (DATA_WIDTH/8);
 
     // ------------------------------------------------------------
     // Commit stream (1 beat per handshake)
     // valid/ready asserted when a beat is committed to memory model
+    //
+    // NOTE:
+    // - valid/payload are driven by DUT (mp_producer)
+    // - ready is driven by TB monitor/consumer (mp_monitor)
+    // - interface itself does not "init" these; TB/DUT own them.
     // ------------------------------------------------------------
-    logic                 valid;
-    logic                 ready;
+    logic                  valid;
+    logic                  ready;
 
-    logic                 port;        // 0: axi0 / 1: axi1
+    logic                  port;        // 0: axi0 / 1: axi1
     logic [IDW-1:0]        id;          // burst ID
     logic [BEAT_IDX_W-1:0] beat_idx;    // beat index within burst (debug)
     logic [ADDR_WIDTH-1:0] byte_addr;   // byte address of this beat
     logic [DATA_WIDTH-1:0] wdata;       // full data bus
     logic [STRBW-1:0]      wstrb;       // byte enables
     logic [2:0]            size;        // AXI size (bytes = 1<<size)
-    logic                 last;        // last beat of burst commit
+    logic                  last;        // last beat of burst commit
 
     // ------------------------------------------------------------
     // Clocking blocks

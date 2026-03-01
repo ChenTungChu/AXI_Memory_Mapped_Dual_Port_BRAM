@@ -79,6 +79,12 @@ module axi_mm_dual_port_bram #(
 
     localparam int BEAT_PTR_W    = (MAX_BURST_BEATS <= 1) ? 1 : $clog2(MAX_BURST_BEATS);
 
+    longint unsigned perf_total_cycles;
+    longint unsigned perf_busy_cycles;
+    longint unsigned perf_bytes_written;
+    longint unsigned perf_p0_bursts;
+    longint unsigned perf_p1_bursts;
+
     // synthesis translate_off
     initial begin
         if ((DATA_WIDTH % 8) != 0) $error("DATA_WIDTH must be a multiple of 8");
@@ -122,6 +128,45 @@ module axi_mm_dual_port_bram #(
     function automatic int unsigned word_index(input logic [ADDR_WIDTH-1:0] byte_addr);
         word_index = (byte_addr >> WORD_SHIFT) % DEPTH_WORDS;
     endfunction
+
+    function automatic int unsigned count_written_bytes(
+        input logic [ADDR_WIDTH-1:0]    byte_addr,
+        input logic [2:0]               size,
+        input logic [BYTE_PER_WORD-1:0] wstrb
+    );
+        int unsigned off;
+        int unsigned bytes;
+        int unsigned b;
+        int unsigned lane;
+        int unsigned cnt;
+        begin
+            off   = (byte_addr % BYTE_PER_WORD);
+            bytes = size_to_bytes(size);
+            cnt   = 0;
+            for (b = 0; b < bytes; b++) begin
+                lane = (off + b) % BYTE_PER_WORD;
+                if (wstrb[lane]) cnt++;
+            end
+            return cnt;
+        end
+    endfunction
+
+    task automatic perf_log_snapshot(string tag);
+        longint unsigned util_pct;
+        longint unsigned avg_bpc_x1000;
+        begin
+            util_pct = (perf_total_cycles == 0) ? 0 : ((perf_busy_cycles * 100) / perf_total_cycles);
+            avg_bpc_x1000 = (perf_total_cycles == 0) ? 0 : ((perf_bytes_written * 1000) / perf_total_cycles);
+
+            $display("%0t [axi_mm_dual_port_bram][%s] cycles=%0d busy=%0d util=%0d%% bytes=%0d avg=%0d.%03d B/cyc bursts(p0=%0d,p1=%0d) ready(p0=%0b,p1=%0b) state=%0d",
+                    $time, tag,
+                    perf_total_cycles, perf_busy_cycles, util_pct,
+                    perf_bytes_written,
+                    (avg_bpc_x1000/1000), (avg_bpc_x1000%1000),
+                    perf_p0_bursts, perf_p1_bursts,
+                    p0_burst_ready, p1_burst_ready, ce_state);
+        end
+    endtask
 
     // ------------------------------------------------------------
     // Memory array (behavioral BRAM)
@@ -988,67 +1033,63 @@ module axi_mm_dual_port_bram #(
     end
 
     // ============================================================
-    // Commit Engine (dma_clk): atomic commit per burst, no interleaving
-    // + commit_if emission aligned with mem_word[] update
+    // Commit Engine (dma_clk): burst-end atomic mem update
+    // - Apply ALL beats into mem_word[] first (atomic at burst end)
+    // - Then emit commit_if beats (handshaked) AFTER mem is updated
+    // - Then issue B response (and P1 deferred ACK) after emit completes
     // ============================================================
-    typedef enum logic [1:0] {CE_IDLE, CE_COMMIT_P0, CE_COMMIT_P1} ce_state_e;
+    typedef enum logic [2:0] {
+        CE_IDLE,
+        CE_APPLY_P0,
+        CE_APPLY_P1,
+        CE_EMIT_P0,
+        CE_EMIT_P1
+    } ce_state_e;
+
     ce_state_e ce_state;
 
-    assign ce_idle = (ce_state == CE_IDLE); 
+    assign ce_idle = (ce_state == CE_IDLE);
 
     int unsigned ce_idx;
     int unsigned ce_total;
     logic [IDW-1:0] ce_bid;
+
+    int unsigned           ce_uniq_cnt;
+    int unsigned           ce_find_j;
+    logic                  ce_found;
+    int unsigned           ce_upd_wi   [0:MAX_BURST_BEATS-1];
+    logic [DATA_WIDTH-1:0] ce_upd_word [0:MAX_BURST_BEATS-1];
 
     int unsigned p0_quota_left;
 
     logic [31:0] p1_starve_cnt;
     logic        p1_starve_asserted;
 
-    longint unsigned perf_total_cycles;
-    longint unsigned perf_busy_cycles;
-    longint unsigned perf_bytes_written;
-    longint unsigned perf_p0_bursts;
-    longint unsigned perf_p1_bursts;
 
-    function automatic int unsigned count_written_bytes(
+    // helper: apply one beat into a word (READ_FIRST model, no forwarding)
+    function automatic logic [DATA_WIDTH-1:0] apply_one_beat_to_word(
+        input logic [DATA_WIDTH-1:0]    cur_word,
         input logic [ADDR_WIDTH-1:0]    byte_addr,
-        input logic [2:0]               size,
-        input logic [BYTE_PER_WORD-1:0] wstrb
+        input logic [DATA_WIDTH-1:0]    wdata,
+        input logic [BYTE_PER_WORD-1:0] wstrb,
+        input logic [2:0]               size
     );
+        logic [DATA_WIDTH-1:0] nxt;
         int unsigned off;
         int unsigned bytes;
         int unsigned b;
         int unsigned lane;
-        int unsigned cnt;
         begin
+            nxt   = cur_word;
             off   = (byte_addr % BYTE_PER_WORD);
             bytes = size_to_bytes(size);
-            cnt   = 0;
             for (b = 0; b < bytes; b++) begin
                 lane = (off + b) % BYTE_PER_WORD;
-                if (wstrb[lane]) cnt++;
+                if (wstrb[lane]) nxt[8*lane +: 8] = wdata[8*lane +: 8];
             end
-            count_written_bytes = cnt;
+            apply_one_beat_to_word = nxt;
         end
     endfunction
-
-    task automatic perf_log_snapshot(string tag);
-        longint unsigned util_pct;
-        longint unsigned avg_bpc_x1000;
-        begin
-            util_pct = (perf_total_cycles == 0) ? 0 : ((perf_busy_cycles * 100) / perf_total_cycles);
-            avg_bpc_x1000 = (perf_total_cycles == 0) ? 0 : ((perf_bytes_written * 1000) / perf_total_cycles);
-
-            $display("%0t [axi_mm_dual_port_bram][%s] cycles=%0d busy=%0d util=%0d%% bytes=%0d avg=%0d.%03d B/cyc bursts(p0=%0d,p1=%0d) ready(p0=%0b,p1=%0b) state=%0d",
-                     $time, tag,
-                     perf_total_cycles, perf_busy_cycles, util_pct,
-                     perf_bytes_written,
-                     (avg_bpc_x1000/1000), (avg_bpc_x1000%1000),
-                     perf_p0_bursts, perf_p1_bursts,
-                     p0_burst_ready, p1_burst_ready, ce_state);
-        end
-    endtask
 
     always_ff @(posedge dma_clk or negedge dma_rst_n) begin
         if (!dma_rst_n) begin
@@ -1056,6 +1097,8 @@ module axi_mm_dual_port_bram #(
             ce_idx   <= 0;
             ce_total <= 0;
             ce_bid   <= '0;
+
+            ce_uniq_cnt <= 0;
 
             p0_quota_left <= P0_WEIGHT;
 
@@ -1105,8 +1148,11 @@ module axi_mm_dual_port_bram #(
             end
 
             unique case (ce_state)
+                // ------------------------------------------------------------
+                // Choose next burst to commit (RR weighted)
+                // ------------------------------------------------------------
                 CE_IDLE: begin
-                    ce_idx   <= 0;
+                    ce_idx <= 0;
 
                     if (p0_burst_ready || p1_burst_ready) begin
                         logic grant_p0, grant_p1;
@@ -1123,9 +1169,9 @@ module axi_mm_dual_port_bram #(
                         end
 
                         if (grant_p0) begin
-                            ce_state <= CE_COMMIT_P0;
                             ce_total <= p0_buf_beats_written;
                             ce_bid   <= p0_burst_id;
+                            ce_state <= CE_APPLY_P0;
 
                             if (p1_burst_ready) begin
                                 if (p0_quota_left != 0) p0_quota_left <= p0_quota_left - 1;
@@ -1133,40 +1179,137 @@ module axi_mm_dual_port_bram #(
                                 if (p0_quota_left == 0) p0_quota_left <= P0_WEIGHT;
                             end
                         end else begin
-                            ce_state <= CE_COMMIT_P1;
                             ce_total <= p1_buf_beats_written;
                             ce_bid   <= p1_burst_id;
+                            ce_state <= CE_APPLY_P1;
 
                             p0_quota_left <= P0_WEIGHT;
                         end
                     end
                 end
 
-                CE_COMMIT_P0: begin
-                    if (ce_idx < ce_total) begin
-                        // IMPORTANT: stall commit if commit_if.cb_producer.ready is low
-                        if (commit_if.cb_producer.ready) begin
-                            int unsigned wi;
-                            int unsigned off;
-                            int unsigned bytes;
-                            logic [DATA_WIDTH-1:0] cur;
-                            int unsigned b;
-                            int unsigned lane;
-                            int unsigned wr_bytes;
+                // ------------------------------------------------------------
+                // APPLY burst to mem_word[] atomically (single dma_clk edge)
+                // ------------------------------------------------------------
+                CE_APPLY_P0: begin
+                    int unsigned i;
+                    int unsigned j;
+                    int unsigned wi;
+                    logic [DATA_WIDTH-1:0] cur;
+                    int unsigned wr_bytes;
 
-                            wi    = word_index(p0_buf[ce_idx].byte_addr);
-                            off   = (p0_buf[ce_idx].byte_addr % BYTE_PER_WORD);
-                            bytes = size_to_bytes(p0_buf[ce_idx].size);
+                    // build unique-word update list for this burst
+                    ce_uniq_cnt = 0;
 
-                            cur = mem_word[wi];
-                            for (b = 0; b < bytes; b++) begin
-                                lane = (off + b) % BYTE_PER_WORD;
-                                if (p0_buf[ce_idx].wstrb[lane])
-                                    cur[8*lane +: 8] = p0_buf[ce_idx].wdata[8*lane +: 8];
+                    for (i = 0; i < ce_total; i++) begin
+                        wi = word_index(p0_buf[i].byte_addr);
+
+                        // find existing entry
+                        ce_found = 1'b0;
+                        ce_find_j = 0;
+                        for (j = 0; j < ce_uniq_cnt; j++) begin
+                            if (ce_upd_wi[j] == wi) begin
+                                ce_found  = 1'b1;
+                                ce_find_j = j;
                             end
-                            mem_word[wi] <= cur;
+                        end
 
-                            // emit commit beat (same cycle as mem update)
+                        if (ce_found) begin
+                            cur = ce_upd_word[ce_find_j];
+                            cur = apply_one_beat_to_word(cur,
+                                                         p0_buf[i].byte_addr,
+                                                         p0_buf[i].wdata,
+                                                         p0_buf[i].wstrb,
+                                                         p0_buf[i].size);
+                            ce_upd_word[ce_find_j] = cur;
+                        end else begin
+                            cur = mem_word[wi];
+                            cur = apply_one_beat_to_word(cur,
+                                                         p0_buf[i].byte_addr,
+                                                         p0_buf[i].wdata,
+                                                         p0_buf[i].wstrb,
+                                                         p0_buf[i].size);
+                            ce_upd_wi[ce_uniq_cnt]   = wi;
+                            ce_upd_word[ce_uniq_cnt] = cur;
+                            ce_uniq_cnt++;
+                        end
+
+                        wr_bytes = count_written_bytes(p0_buf[i].byte_addr, p0_buf[i].size, p0_buf[i].wstrb);
+                        perf_bytes_written <= perf_bytes_written + wr_bytes;
+                    end
+
+                    // commit all updated words atomically at burst end
+                    for (j = 0; j < ce_uniq_cnt; j++) begin
+                        mem_word[ce_upd_wi[j]] <= ce_upd_word[j];
+                    end
+
+                    perf_busy_cycles <= perf_busy_cycles + 1;
+
+                    ce_idx   <= 0;
+                    ce_state <= CE_EMIT_P0;
+                end
+
+                CE_APPLY_P1: begin
+                    int unsigned i;
+                    int unsigned j;
+                    int unsigned wi;
+                    logic [DATA_WIDTH-1:0] cur;
+                    int unsigned wr_bytes;
+
+                    ce_uniq_cnt = 0;
+
+                    for (i = 0; i < ce_total; i++) begin
+                        wi = word_index(p1_buf[i].byte_addr);
+
+                        ce_found = 1'b0;
+                        ce_find_j = 0;
+                        for (j = 0; j < ce_uniq_cnt; j++) begin
+                            if (ce_upd_wi[j] == wi) begin
+                                ce_found  = 1'b1;
+                                ce_find_j = j;
+                            end
+                        end
+
+                        if (ce_found) begin
+                            cur = ce_upd_word[ce_find_j];
+                            cur = apply_one_beat_to_word(cur,
+                                                         p1_buf[i].byte_addr,
+                                                         p1_buf[i].wdata,
+                                                         p1_buf[i].wstrb,
+                                                         p1_buf[i].size);
+                            ce_upd_word[ce_find_j] = cur;
+                        end else begin
+                            cur = mem_word[wi];
+                            cur = apply_one_beat_to_word(cur,
+                                                         p1_buf[i].byte_addr,
+                                                         p1_buf[i].wdata,
+                                                         p1_buf[i].wstrb,
+                                                         p1_buf[i].size);
+                            ce_upd_wi[ce_uniq_cnt]   = wi;
+                            ce_upd_word[ce_uniq_cnt] = cur;
+                            ce_uniq_cnt++;
+                        end
+
+                        wr_bytes = count_written_bytes(p1_buf[i].byte_addr, p1_buf[i].size, p1_buf[i].wstrb);
+                        perf_bytes_written <= perf_bytes_written + wr_bytes;
+                    end
+
+                    for (j = 0; j < ce_uniq_cnt; j++) begin
+                        mem_word[ce_upd_wi[j]] <= ce_upd_word[j];
+                    end
+
+                    perf_busy_cycles <= perf_busy_cycles + 1;
+
+                    ce_idx   <= 0;
+                    ce_state <= CE_EMIT_P1;
+                end
+
+                // ------------------------------------------------------------
+                // EMIT commit beats (handshaked), AFTER mem is updated
+                // ------------------------------------------------------------
+                CE_EMIT_P0: begin
+                    if (ce_idx < ce_total) begin
+                        if (commit_if.cb_producer.ready) begin
                             commit_if.cb_producer.valid     <= 1'b1;
                             commit_if.cb_producer.port      <= 1'b0;
                             commit_if.cb_producer.id        <= ce_bid;
@@ -1177,14 +1320,10 @@ module axi_mm_dual_port_bram #(
                             commit_if.cb_producer.size      <= p0_buf[ce_idx].size;
                             commit_if.cb_producer.last      <= (ce_idx == (ce_total-1));
 
-
-                            wr_bytes = count_written_bytes(p0_buf[ce_idx].byte_addr, p0_buf[ce_idx].size, p0_buf[ce_idx].wstrb);
-                            perf_bytes_written <= perf_bytes_written + wr_bytes;
-
-                            perf_busy_cycles <= perf_busy_cycles + 1;
                             ce_idx <= ce_idx + 1;
                         end
                     end else begin
+                        // push B only after emit completed
                         if (!p0_b_full) begin
                             p0_b_fifo[p0_b_wptr].bid   <= ce_bid;
                             p0_b_fifo[p0_b_wptr].bresp <= 2'b00;
@@ -1201,30 +1340,9 @@ module axi_mm_dual_port_bram #(
                     end
                 end
 
-                CE_COMMIT_P1: begin
+                CE_EMIT_P1: begin
                     if (ce_idx < ce_total) begin
                         if (commit_if.cb_producer.ready) begin
-                            int unsigned wi;
-                            int unsigned off;
-                            int unsigned bytes;
-                            logic [DATA_WIDTH-1:0] cur;
-                            int unsigned b;
-                            int unsigned lane;
-                            int unsigned wr_bytes;
-
-                            wi    = word_index(p1_buf[ce_idx].byte_addr);
-                            off   = (p1_buf[ce_idx].byte_addr % BYTE_PER_WORD);
-                            bytes = size_to_bytes(p1_buf[ce_idx].size);
-
-                            cur = mem_word[wi];
-                            for (b = 0; b < bytes; b++) begin
-                                lane = (off + b) % BYTE_PER_WORD;
-                                if (p1_buf[ce_idx].wstrb[lane])
-                                    cur[8*lane +: 8] = p1_buf[ce_idx].wdata[8*lane +: 8];
-                            end
-                            mem_word[wi] <= cur;
-
-                            // emit commit beat (same cycle as mem update)
                             commit_if.cb_producer.valid     <= 1'b1;
                             commit_if.cb_producer.port      <= 1'b1;
                             commit_if.cb_producer.id        <= ce_bid;
@@ -1235,19 +1353,16 @@ module axi_mm_dual_port_bram #(
                             commit_if.cb_producer.size      <= p1_buf[ce_idx].size;
                             commit_if.cb_producer.last      <= (ce_idx == (ce_total-1));
 
-
-                            wr_bytes = count_written_bytes(p1_buf[ce_idx].byte_addr, p1_buf[ce_idx].size, p1_buf[ce_idx].wstrb);
-                            perf_bytes_written <= perf_bytes_written + wr_bytes;
-
-                            perf_busy_cycles <= perf_busy_cycles + 1;
                             ce_idx <= ce_idx + 1;
                         end
                     end else begin
+                        // P1 deferred last-beat ACK after commit+emit completed
                         if (p1_lastbeat_ack_deferred) begin
                             p1_ack_toggle_dma <= ~p1_ack_toggle_dma;
                             p1_lastbeat_ack_deferred <= 1'b0;
                         end
 
+                        // B on core side is generated by ACK toggle logic (unchanged)
                         p1_burst_ready       <= 1'b0;
                         p1_buf_beats_written <= 0;
 

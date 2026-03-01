@@ -1,3 +1,4 @@
+// File: tb/uvm/monitor/axi_mm_monitor.sv
 `ifndef AXI_MM_MONITOR_SV
 `define AXI_MM_MONITOR_SV
 
@@ -7,23 +8,12 @@ import uvm_pkg::*;
 // -------------------------------------------------------------------------
 // AXI-MM Monitor - cb_monitor version (robust, reset-agent friendly)
 //
-// Key updates (for Case10 Reset/Flush During Activity):
-//  1) Add "ignore window" after reset/flush to DROP late/stray B/R responses
-//     instead of reporting false errors (unknown BID/RID).
-//  2) clear_state() now arms ignore window each time it is called.
-//
-// Additional robustness (for duplicate/late B after completion):
-//  3) Add "duplicate B suppression window" after a write completes.
-//     If a B arrives for an ID that JUST COMPLETED and no matching AW is pending,
-//     we DROP it as DUP/LATE instead of error.
-//
-// Ownership:
-//  - reset events should be triggered by reset_agent/reset_monitor.
-//  - This monitor only LISTENS to global reset/flush events + observes rst_n.
-//
-// Robustness kept:
-//  - During rst_n low: clear_state() ONLY ONCE per reset-entry (debounce)
-//  - Flush_done: trigger with #0 delta to avoid missed-trigger race
+// Fixes / guarantees for commit-based scoreboard:
+//  1) R: always fill rtime_beats[beat] with $time at each R handshake.
+//  2) R: stamp done_time at RLAST.
+//  3) B: DO NOT use edge-detect (bhs_prev) which drops back-to-back B handshakes.
+//     Process every handshake (using prev-cycle sampled payload to avoid race).
+//  4) reset listener split into assert/deassert watchdog tasks (non-blocking).
 // -------------------------------------------------------------------------
 class axi_mm_monitor #(
     int ADDR_WIDTH = 32,
@@ -36,11 +26,10 @@ class axi_mm_monitor #(
     localparam int unsigned BYTES_PER_BEAT = (DATA_WIDTH/8);
     localparam int unsigned MAX_SIZE_LOG2  = $clog2(BYTES_PER_BEAT);
 
-    // ---- Case10: ignore window after reset/flush ----
+    // ---- ignore window after reset/flush ----
     localparam time IGNORE_WINDOW = 500ns; // tune: 200ns~2us based on your fabric
 
     // ---- Duplicate/late B suppression window after write completion ----
-    // If DUT erroneously re-sends same BID shortly after completion, monitor drops it.
     localparam time DUP_B_DROP_WINDOW = 5us; // tune: >= worst-case response skid/backpressure latency
 
     typedef struct {
@@ -132,7 +121,8 @@ class axi_mm_monitor #(
 
     task run_phase(uvm_phase phase);
         fork
-            reset_event_listener(); // LISTEN only
+            reset_assert_watchdog();   // LISTEN only
+            reset_deassert_watchdog(); // LISTEN only
             flush_watchdog();
             monitor_write();
             monitor_read();
@@ -176,22 +166,29 @@ class axi_mm_monitor #(
 
         state_lock.put(1);
 
-        `uvm_info("MON_CLR", $sformatf("State cleared (%s) ignore_unknown_until=%0t", why, ignore_unknown_until), UVM_LOW)
+        `uvm_info("MON_CLR",
+            $sformatf("State cleared (%s) ignore_unknown_until=%0t reset_active=%0b",
+                      why, ignore_unknown_until, reset_active),
+            UVM_LOW)
     endtask
 
     // ------------------------------------------------------------
-    // Reset event listener (NO trigger here; reset_agent owns triggers)
+    // Reset watchdogs (NO trigger here; reset_agent owns triggers)
     // ------------------------------------------------------------
-    task reset_event_listener();
+    task reset_assert_watchdog();
         forever begin
             ev_reset_assert.wait_trigger();
             reset_active = 1'b1;
             clear_state("reset_assert(event)");
             `uvm_info("MON_RST", "Got axi_mm_reset_assert (listen) -> cleared state", UVM_LOW)
+        end
+    endtask
 
+    task reset_deassert_watchdog();
+        forever begin
             ev_reset_deassert.wait_trigger();
             reset_active = 1'b0;
-            // NOTE: keep ignore window running after deassert (already armed in clear_state)
+            // keep ignore window running after deassert (already armed in clear_state)
             `uvm_info("MON_RST", "Got axi_mm_reset_deassert (listen)", UVM_LOW)
         end
     endtask
@@ -278,9 +275,12 @@ class axi_mm_monitor #(
         last_wr_done_time[id_key(e.tr.id)] = $time;
         state_lock.put(1);
 
+        // stamp done_time as well (useful for debug)
+        e.tr.done_time = $time;
+
         `uvm_info("MON_WR_DONE",
-            $sformatf("WRITE completed: ID=%0d addr=0x%0h beats=%0d bresp=%0d",
-                      int'(e.tr.id), e.tr.addr, expected_beats, e.tr.bresp),
+            $sformatf("WRITE completed: ID=%0d addr=0x%0h beats=%0d bresp=%0d done_time=%0t",
+                      int'(e.tr.id), e.tr.addr, expected_beats, e.tr.bresp, e.tr.done_time),
             UVM_LOW)
 
         ap.write(e.tr);
@@ -307,7 +307,6 @@ class axi_mm_monitor #(
 
         // previous-cycle signals (avoid same-cycle ready/data race)
         bit                  bhs;
-        bit                  bhs_prev;
         bit                  bvalid_prev;
         bit                  bready_prev;
         logic [ID_WIDTH-1:0] bid_prev;
@@ -321,13 +320,15 @@ class axi_mm_monitor #(
         bready_prev = vif.cb_monitor.bready;
         bid_prev    = vif.cb_monitor.bid;
         bresp_prev  = vif.cb_monitor.bresp;
-        bhs_prev    = 1'b0;
 
         forever begin
             @(vif.cb_monitor);
 
             // reset entry debounce
             if (vif.cb_monitor.rst_n === 1'b0) begin
+                // if reset_agent didn't trigger events, still gate drops correctly
+                reset_active = 1'b1;
+
                 if (!local_reset_active) begin
                     local_reset_active = 1'b1;
                     clear_state("in_reset(write)");
@@ -423,7 +424,7 @@ class axi_mm_monitor #(
                                                 write_q[0].tr.burst,
                                                 beat_idx);
 
-                        write_q[0].tr.data_beats[beat_idx]  = vif.cb_monitor.wdata;
+                        write_q[0].tr.wdata_beats[beat_idx]  = vif.cb_monitor.wdata;
                         write_q[0].tr.wstrb_beats[beat_idx] = vif.cb_monitor.wstrb;
                         write_q[0].beat_cnt++;
 
@@ -467,11 +468,12 @@ class axi_mm_monitor #(
 
             // ------------------------------------------------------------
             // B capture (prev-cycle handshake + payload) with de-dup
+            // IMPORTANT FIX: process EVERY handshake (no edge-detect),
+            // otherwise back-to-back B handshakes get dropped.
             // ------------------------------------------------------------
             bhs = (bvalid_prev === 1'b1) && (bready_prev === 1'b1);
 
-            // Only act on rising edge of bhs (de-dup)
-            if (bhs && !bhs_prev) begin
+            if (bhs) begin
                 have_tmp = 0;
 
                 bid_l = bid_prev;
@@ -548,9 +550,6 @@ class axi_mm_monitor #(
                 end
             end
 
-            // update de-dup state
-            bhs_prev = bhs;
-
             // Update prev at end of loop
             bvalid_prev = vif.cb_monitor.bvalid;
             bready_prev = vif.cb_monitor.bready;
@@ -571,7 +570,6 @@ class axi_mm_monitor #(
         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) done_tr;
         bit have_done;
 
-        // local latch: clear once per reset-entry even if event missed
         bit local_reset_active;
         local_reset_active = 1'b0;
 
@@ -580,6 +578,9 @@ class axi_mm_monitor #(
 
             // reset entry debounce
             if (vif.cb_monitor.rst_n === 1'b0) begin
+                // if reset_agent didn't trigger events, still gate drops correctly
+                reset_active = 1'b1;
+
                 if (!local_reset_active) begin
                     local_reset_active = 1'b1;
                     clear_state("in_reset(read)");
@@ -597,11 +598,11 @@ class axi_mm_monitor #(
                 if ((ar_wait_cyc_r % 100) == 0) begin
                     `uvm_info("MON_AR_WAIT",
                         $sformatf("AR waiting (%0d cyc): v=%0b r=%0b addr=0x%0h id=%0d len=%0d burst=%02b size=%0d",
-                                  ar_wait_cyc_r,
-                                  vif.cb_monitor.arvalid, vif.cb_monitor.arready,
-                                  vif.cb_monitor.araddr,  vif.cb_monitor.arid,
-                                  vif.cb_monitor.arlen,   vif.cb_monitor.arburst,
-                                  vif.cb_monitor.arsize),
+                                ar_wait_cyc_r,
+                                vif.cb_monitor.arvalid, vif.cb_monitor.arready,
+                                vif.cb_monitor.araddr,  vif.cb_monitor.arid,
+                                vif.cb_monitor.arlen,   vif.cb_monitor.arburst,
+                                vif.cb_monitor.arsize),
                         UVM_LOW)
                 end
             end else begin
@@ -611,8 +612,23 @@ class axi_mm_monitor #(
             // AR capture
             if ((vif.cb_monitor.arvalid === 1'b1) && (vif.cb_monitor.arready === 1'b1)) begin
                 int unsigned pending_cnt_after;
+                ar_tr_t new_e;
 
                 id_k = id_key(vif.cb_monitor.arid);
+
+                // Build fully initialized entry (avoid X/partial struct)
+                new_e.tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create(
+                    $sformatf("rd_tr_id_%0d", int'(vif.cb_monitor.arid)), this);
+
+                new_e.tr.rw    = AXI_READ;
+                new_e.tr.addr  = vif.cb_monitor.araddr;
+                new_e.tr.id    = vif.cb_monitor.arid;
+                new_e.tr.len   = vif.cb_monitor.arlen;
+                new_e.tr.size  = vif.cb_monitor.arsize;
+                new_e.tr.burst = vif.cb_monitor.arburst;
+
+                new_e.tr.set_beats_len(new_e.tr.len);
+                new_e.beat_cnt = 0;
 
                 state_lock.get(1);
 
@@ -620,28 +636,15 @@ class axi_mm_monitor #(
                     state_lock.put(1);
                     `uvm_error("MON", $sformatf("AR received while read pending ID=%0d", id_k))
                 end else begin
-                    pending_reads_s[id_k].tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create(
-                        $sformatf("rd_tr_id_%0d", int'(vif.cb_monitor.arid)), this);
-
-                    pending_reads_s[id_k].tr.rw    = AXI_READ;
-                    pending_reads_s[id_k].tr.addr  = vif.cb_monitor.araddr;
-                    pending_reads_s[id_k].tr.id    = vif.cb_monitor.arid;
-                    pending_reads_s[id_k].tr.len   = vif.cb_monitor.arlen;
-                    pending_reads_s[id_k].tr.size  = vif.cb_monitor.arsize;
-                    pending_reads_s[id_k].tr.burst = vif.cb_monitor.arburst;
-
-                    pending_reads_s[id_k].tr.set_beats_len(pending_reads_s[id_k].tr.len);
-                    pending_reads_s[id_k].beat_cnt = 0;
-
+                    pending_reads_s[id_k] = new_e;
                     pending_cnt_after = pending_reads_s.num();
-
                     state_lock.put(1);
 
                     `uvm_info("MON_AR_HS",
                         $sformatf("AR HS: ID=%0d addr=0x%0h len=%0d burst=%02b size=%0d (pending=%0d)",
-                                  int'(vif.cb_monitor.arid), vif.cb_monitor.araddr, vif.cb_monitor.arlen,
-                                  vif.cb_monitor.arburst, vif.cb_monitor.arsize,
-                                  pending_cnt_after),
+                                int'(vif.cb_monitor.arid), vif.cb_monitor.araddr, vif.cb_monitor.arlen,
+                                vif.cb_monitor.arburst, vif.cb_monitor.arsize,
+                                pending_cnt_after),
                         UVM_LOW)
                 end
             end
@@ -652,10 +655,10 @@ class axi_mm_monitor #(
                 if ((r_wait_cyc_r % 100) == 0) begin
                     `uvm_info("MON_R_WAIT",
                         $sformatf("R waiting (%0d cyc): v=%0b r=%0b rid=%0d rlast=%0b rresp=%0b rdata=0x%0h",
-                                  r_wait_cyc_r,
-                                  vif.cb_monitor.rvalid, vif.cb_monitor.rready,
-                                  int'(vif.cb_monitor.rid), vif.cb_monitor.rlast,
-                                  vif.cb_monitor.rresp, vif.cb_monitor.rdata),
+                                r_wait_cyc_r,
+                                vif.cb_monitor.rvalid, vif.cb_monitor.rready,
+                                int'(vif.cb_monitor.rid), vif.cb_monitor.rlast,
+                                vif.cb_monitor.rresp, vif.cb_monitor.rdata),
                         UVM_LOW)
                 end
             end else begin
@@ -672,13 +675,12 @@ class axi_mm_monitor #(
                 state_lock.get(1);
 
                 if (!pending_reads_s.exists(id_k)) begin
-                    // drop late/stray R during ignore window
                     if (in_ignore_window()) begin
                         state_lock.put(1);
                         `uvm_info("MON_R_DROP",
                             $sformatf("Drop late/stray R during reset/flush window: RID=%0d rlast=%0b rresp=%0b rdata=0x%0h (ignore_until=%0t reset_active=%0b)",
-                                      int'(vif.cb_monitor.rid), vif.cb_monitor.rlast, vif.cb_monitor.rresp, vif.cb_monitor.rdata,
-                                      ignore_unknown_until, reset_active),
+                                    int'(vif.cb_monitor.rid), vif.cb_monitor.rlast, vif.cb_monitor.rresp, vif.cb_monitor.rdata,
+                                    ignore_unknown_until, reset_active),
                             UVM_LOW)
                     end else begin
                         state_lock.put(1);
@@ -689,34 +691,41 @@ class axi_mm_monitor #(
                     beat_idx       = pending_reads_s[id_k].beat_cnt;
 
                     beat_addr = calc_beat_addr(pending_reads_s[id_k].tr.addr,
-                                               pending_reads_s[id_k].tr.size,
-                                               pending_reads_s[id_k].tr.len,
-                                               pending_reads_s[id_k].tr.burst,
-                                               beat_idx);
+                                            pending_reads_s[id_k].tr.size,
+                                            pending_reads_s[id_k].tr.len,
+                                            pending_reads_s[id_k].tr.burst,
+                                            beat_idx);
 
                     if (beat_idx < expected_beats) begin
                         pending_reads_s[id_k].tr.rdata_beats[beat_idx] = vif.cb_monitor.rdata;
                         pending_reads_s[id_k].tr.rresp_beats[beat_idx] = vif.cb_monitor.rresp;
+
+                        // IMPORTANT: per-beat timestamp (scoreboard uses this!)
+                        pending_reads_s[id_k].tr.rtime_beats[beat_idx] = $time;
+
                         pending_reads_s[id_k].beat_cnt++;
 
                         `uvm_info("MON_R_HS",
                             $sformatf("R HS: ID=%0d beat=%0d/%0d addr=0x%0h data=0x%0h rresp=%0b rlast=%0b",
-                                      int'(vif.cb_monitor.rid), beat_idx, expected_beats, beat_addr,
-                                      vif.cb_monitor.rdata, vif.cb_monitor.rresp, vif.cb_monitor.rlast),
+                                    int'(vif.cb_monitor.rid), beat_idx, expected_beats, beat_addr,
+                                    vif.cb_monitor.rdata, vif.cb_monitor.rresp, vif.cb_monitor.rlast),
                             UVM_HIGH)
                     end else begin
                         `uvm_error("MON",
                             $sformatf("Extra R beat. ID=%0d beat=%0d exp=%0d addr=0x%0h data=0x%0h rresp=%0b rlast=%0b",
-                                      int'(vif.cb_monitor.rid), beat_idx, expected_beats, beat_addr,
-                                      vif.cb_monitor.rdata, vif.cb_monitor.rresp, vif.cb_monitor.rlast))
+                                    int'(vif.cb_monitor.rid), beat_idx, expected_beats, beat_addr,
+                                    vif.cb_monitor.rdata, vif.cb_monitor.rresp, vif.cb_monitor.rlast))
                     end
 
                     if (vif.cb_monitor.rlast === 1'b1) begin
                         if (pending_reads_s[id_k].beat_cnt != expected_beats) begin
                             `uvm_error("MON",
                                 $sformatf("RLAST early/late. ID=%0d beats=%0d/%0d",
-                                          int'(vif.cb_monitor.rid), pending_reads_s[id_k].beat_cnt, expected_beats))
+                                        int'(vif.cb_monitor.rid), pending_reads_s[id_k].beat_cnt, expected_beats))
                         end
+
+                        // stamp txn done_time at RLAST
+                        pending_reads_s[id_k].tr.done_time = $time;
 
                         done_tr = pending_reads_s[id_k].tr;
                         pending_reads_s.delete(id_k);
@@ -725,7 +734,13 @@ class axi_mm_monitor #(
 
                     state_lock.put(1);
 
-                    if (have_done) ap.write(done_tr);
+                    if (have_done) begin
+                        `uvm_info("MON_RD_DONE",
+                            $sformatf("READ completed: ID=%0d addr=0x%0h beats=%0d done_time=%0t",
+                                      int'(done_tr.id), done_tr.addr, (done_tr.len+1), done_tr.done_time),
+                            UVM_LOW)
+                        ap.write(done_tr);
+                    end
                 end
             end
         end

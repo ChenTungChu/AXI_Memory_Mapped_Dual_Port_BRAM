@@ -5,6 +5,8 @@
 import uvm_pkg::*;
 `include "uvm_macros.svh"
 
+// Commit beat item: 以 commit_if 的 valid/ready handshake 為準，
+// 用於 scoreboard 做「可視化時間點」(commit_time) 的 byte-level 更新。
 class axi_mm_commit_item #(
     int ADDR_WIDTH = 32,
     int DATA_WIDTH = 64,
@@ -12,37 +14,62 @@ class axi_mm_commit_item #(
     int BEAT_IDX_W = 8
 ) extends uvm_sequence_item;
 
+    // Defensive widths
     localparam int IDW   = (ID_WIDTH > 0) ? ID_WIDTH : 1;
-    localparam int STRBW = DATA_WIDTH/8;
+    localparam int STRBW = (DATA_WIDTH/8);
 
-    // fields
-    bit                  port;       // 0/1
-    logic [IDW-1:0]       id;
+    // ----------------------------------------------------------------
+    // Fields sampled at commit_if handshake
+    // ----------------------------------------------------------------
+    // NOTE: port is intended to be 0/1. If your design later makes it wider,
+    //       update this item + scoreboard accordingly (avoid silent truncation).
+    logic                  port;       // 0/1
+    logic [IDW-1:0]        id;
     logic [BEAT_IDX_W-1:0] beat_idx;
-    logic [ADDR_WIDTH-1:0] byte_addr;
+    logic [ADDR_WIDTH-1:0] byte_addr;  // beat base address in BYTES
     logic [DATA_WIDTH-1:0] wdata;
     logic [STRBW-1:0]      wstrb;
-    logic [2:0]            size;
-    bit                   last;
+    logic [2:0]            size;       // log2(bytes) per AXI
+    logic                  last;
 
+    time                   commit_time;
+
+    // ----------------------------------------------------------------
+    // UVM registration + field automation
+    // ----------------------------------------------------------------
     `uvm_object_param_utils_begin(axi_mm_commit_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W))
-        `uvm_field_int(port,      UVM_DEFAULT)
-        `uvm_field_int(id,        UVM_DEFAULT)
-        `uvm_field_int(beat_idx,  UVM_DEFAULT)
-        `uvm_field_int(byte_addr, UVM_DEFAULT)
-        `uvm_field_int(wdata,     UVM_DEFAULT)
-        `uvm_field_int(wstrb,     UVM_DEFAULT)
-        `uvm_field_int(size,      UVM_DEFAULT)
-        `uvm_field_int(last,      UVM_DEFAULT)
+        `uvm_field_int(port,        UVM_DEFAULT)
+        `uvm_field_int(id,          UVM_DEFAULT)
+        `uvm_field_int(beat_idx,    UVM_DEFAULT)
+        `uvm_field_int(byte_addr,   UVM_DEFAULT)
+        `uvm_field_int(wdata,       UVM_DEFAULT)
+        `uvm_field_int(wstrb,       UVM_DEFAULT)
+        `uvm_field_int(size,        UVM_DEFAULT)
+        `uvm_field_int(last,        UVM_DEFAULT)
+        // commit_time is 'time' (usually 64-bit). Treat as int field for print/copy/compare.
+        `uvm_field_int(commit_time, UVM_DEFAULT)
     `uvm_object_utils_end
 
     function new(string name = "axi_mm_commit_item");
         super.new(name);
+
+        // Safe defaults (avoid X spam in logs)
+        port        = 1'b0;
+        id          = '0;
+        beat_idx    = '0;
+        byte_addr   = '0;
+        wdata       = '0;
+        wstrb       = '0;
+        size        = 3'd0;
+        last        = 1'b0;
+        commit_time = 0;
     endfunction
 
     function string convert2string();
-        return $sformatf("commit: port=%0d id=0x%0h beat_idx=%0d addr=0x%0h data=0x%0h wstrb=0x%0h size=%0d last=%0d",
-                         port, id, beat_idx, byte_addr, wdata, wstrb, size, last);
+        return $sformatf(
+            "commit: t=%0t port=%0d id=0x%0h beat_idx=%0d addr=0x%0h data=0x%0h wstrb=0x%0h size=%0d last=%0d",
+            commit_time, int'(port), id, beat_idx, byte_addr, wdata, wstrb, size, last
+        );
     endfunction
 
 endclass : axi_mm_commit_item

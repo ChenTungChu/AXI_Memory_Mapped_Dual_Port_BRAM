@@ -5,6 +5,7 @@
 # Work library
 work/
 work_*/
+uvm12/
 
 # Optimization output
 @_opt/
@@ -17,6 +18,7 @@ wlft*
 
 # Transcript / logs
 transcript
+logs/
 *.log
 *.xml
 
@@ -27,6 +29,11 @@ transcript
 *.swo
 *.ini
 *.vstf
+
+# Local file
+compile_local.tcl
+compile_old.tcl
+run_old.tcl
 
 # Windows junk
 Thumbs.db

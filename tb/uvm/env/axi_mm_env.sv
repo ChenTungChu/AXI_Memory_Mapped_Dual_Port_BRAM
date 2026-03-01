@@ -1,10 +1,9 @@
+// File: tb/uvm/env/axi_mm_env.sv
 `ifndef AXI_MM_ENV_SV
 `define AXI_MM_ENV_SV
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
-
-// axi_mm_env.sv
 
 class axi_mm_env #(
     int ADDR_WIDTH  = 32,
@@ -16,6 +15,11 @@ class axi_mm_env #(
   `uvm_component_utils(axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS))
 
   // ------------------------------------------------------------
+  // Local params
+  // ------------------------------------------------------------
+  localparam int COMMIT_BEAT_IDX_W = 8;
+
+  // ------------------------------------------------------------
   // Agents
   // ------------------------------------------------------------
   axi_mm_agent #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_agent;
@@ -25,11 +29,9 @@ class axi_mm_env #(
   reset_agent rst_agent;
 
   // ------------------------------------------------------------
-  // Commit monitor (Route A)  <<< NEW
+  // Commit monitor (Route A)
   // ------------------------------------------------------------
-  // 這裡假設你的 commit_monitor class 名字是 axi_mm_commit_monitor
-  // 且可 parameterize (ADDR/DATA/ID/...)；若你的 class 不帶參數，這行改掉即可。
-  axi_mm_commit_monitor #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) commit_mon;
+  axi_mm_commit_monitor #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, COMMIT_BEAT_IDX_W) commit_mon;
 
   // ------------------------------------------------------------
   // Scoreboards
@@ -38,11 +40,23 @@ class axi_mm_env #(
   axi_mm_cov_scoreboard #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)                 cov_scoreboard_h;
 
   // ------------------------------------------------------------
+  // Coverage subscriber
+  // ------------------------------------------------------------
+  axi_mm_cov_subscriber #(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH) cov_p0;
+  axi_mm_cov_subscriber #(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH) cov_p1;
+
+  // ------------------------------------------------------------
   // Reset control knobs (config_db can overwrite)
   // ------------------------------------------------------------
-  bit             initial_reset     = 1;
+  bit          initial_reset        = 1;
   int unsigned rst_assert_cycles    = 50;
   int unsigned rst_deassert_cycles  = 10;
+
+  // ------------------------------------------------------------
+  // Window bases (scoreboard mapping)
+  // ------------------------------------------------------------
+  logic [ADDR_WIDTH-1:0] win0_base;
+  logic [ADDR_WIDTH-1:0] win1_base;
 
   // Global reset events (published by reset_monitor inside reset_agent)
   uvm_event ev_reset_assert;
@@ -60,18 +74,59 @@ class axi_mm_env #(
     void'(uvm_config_db#(int unsigned)::get(this, "", "rst_assert_cycles",    rst_assert_cycles));
     void'(uvm_config_db#(int unsigned)::get(this, "", "rst_deassert_cycles",  rst_deassert_cycles));
 
+    // ------------------------------------------------------------
+    // Window bases:
+    // 1) Prefer config_db override (from test)
+    // 2) Else fall back to `ifdef WIN0_BASE/WIN1_BASE
+    // ------------------------------------------------------------
+    if (!uvm_config_db#(logic [ADDR_WIDTH-1:0])::get(this, "", "WIN0_BASE", win0_base)) begin
+      `ifdef WIN0_BASE
+        win0_base = WIN0_BASE;
+      `else
+        win0_base = '0;
+      `endif
+    end
+
+    if (!uvm_config_db#(logic [ADDR_WIDTH-1:0])::get(this, "", "WIN1_BASE", win1_base)) begin
+      `ifdef WIN1_BASE
+        win1_base = WIN1_BASE;
+      `else
+        win1_base = '0;
+      `endif
+    end
+
+    // Publish to all descendants (scoreboard expects these keys)
+    // Use "*" under env so every child gets consistent mapping.
+    uvm_config_db#(logic [ADDR_WIDTH-1:0])::set(this, "*", "WIN0_BASE", win0_base);
+    uvm_config_db#(logic [ADDR_WIDTH-1:0])::set(this, "*", "WIN1_BASE", win1_base);
+
+    `uvm_info("ENV",
+              $sformatf("WIN bases: WIN0_BASE=0x%0h WIN1_BASE=0x%0h", win0_base, win1_base),
+              UVM_LOW)
+
+    // ------------------------------------------------------------
+    // Commit monitor defaults (deterministic unless overridden)
+    // NOTE: path "commit_mon" must match the instance name below.
+    // ------------------------------------------------------------
+    uvm_config_db#(bit)::set(this, "commit_mon", "drive_ready_always", 1);
+    uvm_config_db#(bit)::set(this, "commit_mon", "stress_enable",      0);
+
     // Agents
     p0_agent  = axi_mm_agent#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_agent", this);
     p1_agent  = axi_mm_agent#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p1_agent", this);
     rst_agent = reset_agent::type_id::create("rst_agent", this);
 
-    // Commit monitor  <<< NEW
-    commit_mon = axi_mm_commit_monitor#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("commit_mon", this);
+    // Commit monitor
+    commit_mon = axi_mm_commit_monitor#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, COMMIT_BEAT_IDX_W)
+                 ::type_id::create("commit_mon", this);
 
     // Scoreboards
     scb = axi_mm_scoreboard#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, DEPTH_WORDS, 0)::type_id::create("scb", this);
-    cov_scoreboard_h =
-      axi_mm_cov_scoreboard#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_scoreboard_h", this);
+    cov_scoreboard_h = axi_mm_cov_scoreboard#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_scoreboard_h", this);
+
+    // Subscribers
+    cov_p0 = axi_mm_cov_subscriber#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov_p0", this);
+    cov_p1 = axi_mm_cov_subscriber#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov_p1", this);
 
     // Global reset events (monitor is the single source of truth)
     ev_reset_assert   = uvm_event_pool::get_global("axi_mm_reset_assert");
@@ -81,35 +136,69 @@ class axi_mm_env #(
   virtual function void connect_phase(uvm_phase phase);
     super.connect_phase(phase);
 
-    if (p0_agent == null || p0_agent.mon == null)
-      `uvm_fatal("ENV", "p0_agent/mon is null")
-    if (p1_agent == null || p1_agent.mon == null)
-      `uvm_fatal("ENV", "p1_agent/mon is null")
+    // ------------------------------------------------------------
+    // Hard checks (fail fast)
+    // ------------------------------------------------------------
+    if (p0_agent == null)
+      `uvm_fatal("ENV", "p0_agent is null (build failed)")
+    if (p1_agent == null)
+      `uvm_fatal("ENV", "p1_agent is null (build failed)")
     if (rst_agent == null)
-      `uvm_fatal("ENV", "rst_agent is null")
+      `uvm_fatal("ENV", "rst_agent is null (build failed)")
     if (commit_mon == null)
-      `uvm_fatal("ENV", "commit_mon is null")
+      `uvm_fatal("ENV", "commit_mon is null (build failed)")
     if (scb == null)
-      `uvm_fatal("ENV", "scb is null")
+      `uvm_fatal("ENV", "scb is null (build failed)")
     if (cov_scoreboard_h == null)
-      `uvm_fatal("ENV", "cov_scoreboard_h is null")
+      `uvm_fatal("ENV", "cov_scoreboard_h is null (build failed)")
+    if (cov_p0 == null || cov_p1 == null)
+      `uvm_fatal("ENV", "cov subscribers are null (build failed)")
 
-    // Monitors -> Scoreboard (原本的 AXI 觀測)
-    p0_agent.mon.ap.connect(scb.ap_imp_p0);
-    p1_agent.mon.ap.connect(scb.ap_imp_p1);
+    // agent analysis ports must exist
+    if (p0_agent.ap == null)
+      `uvm_fatal("ENV", "p0_agent.ap is null (agent monitor not built or ap not exported)")
+    if (p1_agent.ap == null)
+      `uvm_fatal("ENV", "p1_agent.ap is null (agent monitor not built or ap not exported)")
 
-    // Commit monitor -> Scoreboard (Route A 的 commit 事件)  <<< NEW
-    // 這裡假設 scoreboard 新增了一個 ap_imp_commit 來接 axi_mm_commit_item
+    // commit monitor analysis port must exist
+    if (commit_mon.ap == null)
+      `uvm_fatal("ENV", "commit_mon.ap is null (commit monitor build failed)")
+
+    // scoreboard analysis imps must exist
+    if (scb.ap_imp_p0 == null || scb.ap_imp_p1 == null || scb.ap_imp_commit == null)
+      `uvm_fatal("ENV", "scb analysis imps are null (scoreboard build failed)")
+
+    // coverage scoreboard imps must exist
+    if (cov_scoreboard_h.analysis_imp_p0 == null || cov_scoreboard_h.analysis_imp_p1 == null)
+      `uvm_fatal("ENV", "cov_scoreboard_h analysis imps are null")
+
+    // ------------------------------------------------------------
+    // Connections (the canonical route)
+    // ------------------------------------------------------------
+
+    // Monitors -> Functional scoreboard (p0/p1)
+    p0_agent.ap.connect(scb.ap_imp_p0);
+    p1_agent.ap.connect(scb.ap_imp_p1);
+
+    // Commit monitor -> Functional scoreboard (commit stream)
     commit_mon.ap.connect(scb.ap_imp_commit);
 
-    // Monitors -> Coverage
-    p0_agent.mon.ap.connect(cov_scoreboard_h.analysis_imp_p0);
-    p1_agent.mon.ap.connect(cov_scoreboard_h.analysis_imp_p1);
+    // Monitors -> Coverage scoreboard
+    p0_agent.ap.connect(cov_scoreboard_h.analysis_imp_p0);
+    p1_agent.ap.connect(cov_scoreboard_h.analysis_imp_p1);
 
-    `uvm_info("ENV", "axi_mm_env connected monitors to scoreboard/coverage (+rst_agent +commit_mon)", UVM_LOW)
+    // Monitors -> Subscribers
+    p0_agent.ap.connect(cov_p0.analysis_export);
+    p1_agent.ap.connect(cov_p1.analysis_export);
+
+    `uvm_info("ENV",
+              "axi_mm_env connected: p0/p1 monitor -> scb + cov_scoreboard + cov_subscribers; commit_mon -> scb",
+              UVM_LOW)
   endfunction
 
-
+  // ------------------------------------------------------------
+  // Optional helper: initial reset
+  // ------------------------------------------------------------
   task automatic do_initial_reset(
       uvm_phase    phase,
       string       reason  = "axi_mm_env do_initial_reset",
@@ -137,10 +226,9 @@ class axi_mm_env #(
                 rst_assert_cycles, rst_deassert_cycles),
       UVM_LOW)
 
-    // drive reset (blocking until seq completes)
     rst_seq.start(rst_agent.seqr);
 
-    // Let same-timestep observers (monitor/scoreboard/driver) settle
+    // Let same-timestep observers settle
     #0;
     #1step;
 

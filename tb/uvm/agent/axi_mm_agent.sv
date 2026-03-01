@@ -4,6 +4,9 @@
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
+
+// 若你的 axi_mm_seq_item / enum / if 都在 axi_mm_pkg，保留這行；
+// 若不是在 package 裡，這行也不會傷害（只要 package 存在）。
 import axi_mm_pkg::*;
 
 class axi_mm_agent #(
@@ -29,7 +32,8 @@ class axi_mm_agent #(
     virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_monitor vif_mon;
 
     // ------------------------------------------------------------
-    // Analysis port (agent-level export)
+    // Analysis port (agent-level re-export)
+    // env: p0_agent.ap.connect(scb.ap_imp_p0)  (合法)
     // ------------------------------------------------------------
     uvm_analysis_port #(axi_mm_seq_item #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)) ap;
 
@@ -44,11 +48,8 @@ class axi_mm_agent #(
     virtual function void build_phase(uvm_phase phase);
         super.build_phase(phase);
 
-        // --------------------------------------------------------
-        // ACTIVE / PASSIVE (use base-class is_active directly)
-        // --------------------------------------------------------
-        void'(uvm_config_db#(uvm_active_passive_enum)::get(
-              this, "", "is_active", is_active));
+        // ACTIVE / PASSIVE (allow config override)
+        void'(uvm_config_db#(uvm_active_passive_enum)::get(this, "", "is_active", is_active));
 
         `uvm_info("AGENT",
             $sformatf("Building agent '%s' (%s)",
@@ -57,7 +58,8 @@ class axi_mm_agent #(
             UVM_LOW)
 
         // --------------------------------------------------------
-        // Get monitor vif (REQUIRED)
+        // Get monitor vif (REQUIRED always)
+        // Keys tried: vif_mon (preferred), vif (legacy)
         // --------------------------------------------------------
         if (!uvm_config_db#(
                 virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_monitor
@@ -75,6 +77,7 @@ class axi_mm_agent #(
 
         // --------------------------------------------------------
         // Get master vif (REQUIRED if ACTIVE)
+        // Keys tried: vif_m (preferred), vif (legacy)
         // --------------------------------------------------------
         if (is_active == UVM_ACTIVE) begin
             if (!uvm_config_db#(
@@ -93,32 +96,35 @@ class axi_mm_agent #(
         end
 
         // --------------------------------------------------------
-        // Monitor (always present)
+        // IMPORTANT: set config_db BEFORE creating children
         // --------------------------------------------------------
-        mon = axi_mm_monitor#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("mon", this);
 
+        // Monitor always present
         uvm_config_db#(
             virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_monitor
         )::set(this, "mon", "vif_mon", vif_mon);
 
+        // legacy fallback key (your monitor build_phase tries vif_mon then vif)
         uvm_config_db#(
             virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_monitor
         )::set(this, "mon", "vif", vif_mon);
 
-        // --------------------------------------------------------
-        // Driver + Sequencer (ACTIVE only)
-        // --------------------------------------------------------
-        if (is_active == UVM_ACTIVE) begin
-            seqr = axi_mm_sequencer#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seqr", this);
-            drv  = axi_mm_driver   #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("drv",  this);
+        mon = axi_mm_monitor#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("mon", this);
 
+        // Driver + Sequencer (ACTIVE only)
+        if (is_active == UVM_ACTIVE) begin
+            // set before create drv
+            uvm_config_db#(
+                virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_master
+            )::set(this, "drv", "vif_m", vif_m);
+
+            // legacy fallback key (driver 常見用 vif)
             uvm_config_db#(
                 virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_master
             )::set(this, "drv", "vif", vif_m);
 
-            uvm_config_db#(
-                virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, HAS_BURST).mp_master
-            )::set(this, "drv", "vif_m", vif_m);
+            seqr = axi_mm_sequencer#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seqr", this);
+            drv  = axi_mm_driver   #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("drv",  this);
         end
     endfunction
 
@@ -128,13 +134,19 @@ class axi_mm_agent #(
     virtual function void connect_phase(uvm_phase phase);
         super.connect_phase(phase);
 
+        if (mon == null)
+            `uvm_fatal("AGENT", $sformatf("mon is null in connect_phase (%s)", get_full_name()))
+
         if (is_active == UVM_ACTIVE) begin
+            if (drv == null || seqr == null)
+                `uvm_fatal("AGENT", $sformatf("drv/seqr is null in ACTIVE agent (%s)", get_full_name()))
             drv.seq_item_port.connect(seqr.seq_item_export);
         end
 
+        // re-export monitor analysis
         mon.ap.connect(ap);
     endfunction
 
-endclass
+endclass : axi_mm_agent
 
 `endif

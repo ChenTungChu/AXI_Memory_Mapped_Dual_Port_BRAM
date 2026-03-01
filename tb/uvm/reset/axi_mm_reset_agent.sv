@@ -5,7 +5,7 @@ import uvm_pkg::*;
 `include "uvm_macros.svh"
 
 // -----------------------------------------------------------------------------
-// axi_mm_reset_agent.sv
+// File: tb/uvm/axi_mm_reset_agent.sv
 //
 // TB-owned reset driver + reset monitor
 // - Monitor is the SINGLE source of truth for broadcasting reset edges.
@@ -13,16 +13,16 @@ import uvm_pkg::*;
 //     "axi_mm_reset_assert"    (rst_n: 1 -> 0)
 //     "axi_mm_reset_deassert"  (rst_n: 0 -> 1)
 //
-// NEW: Built-in Power-On Reset (POR)
-// - reset_agent will automatically start axi_mm_reset_seq once at time 0
-//   so rst_n will be released and other drivers can run.
+// Built-in Power-On Reset (POR)
+// - reset_agent will automatically start axi_mm_reset_seq once at start of run
 // - POR can be disabled or configured via uvm_config_db.
 //
 // Interface requirements (axi_mm_reset_if):
 // - logic rst_n;
-// - clocking cb @(posedge clk) ... rst_n;
-// - modport mp_driver  (clocking cb, input clk);
-// - modport mp_monitor (clocking cb, input clk);
+// - clocking cb_drv @(posedge clk) with output rst_n
+// - clocking cb_mon @(posedge clk) with input  rst_n
+// - modport mp_driver  (clocking cb_drv, input clk);
+// - modport mp_monitor (clocking cb_mon, input clk);
 // -----------------------------------------------------------------------------
 
 // ============================
@@ -96,7 +96,7 @@ endclass
 // ============================
 // Reset driver
 // ============================
-// Drives reset via clocking block (mp_driver.cb.rst_n).
+// Drives reset via clocking block (mp_driver.cb_drv.rst_n).
 class reset_driver extends uvm_driver#(reset_seq_item);
   `uvm_component_utils(reset_driver)
 
@@ -115,13 +115,13 @@ class reset_driver extends uvm_driver#(reset_seq_item);
 
   task automatic drive_value(bit rst_n_val, int unsigned cycles);
     // Drive on clocking block edge
-    @(vif.cb);
-    vif.cb.rst_n <= rst_n_val;
+    @(vif.cb_drv);
+    vif.cb_drv.rst_n <= rst_n_val;
 
     if (cycles > 1) begin
       repeat (cycles-1) begin
-        @(vif.cb);
-        vif.cb.rst_n <= rst_n_val;
+        @(vif.cb_drv);
+        vif.cb_drv.rst_n <= rst_n_val;
       end
     end
   endtask
@@ -130,8 +130,8 @@ class reset_driver extends uvm_driver#(reset_seq_item);
     reset_seq_item tr;
 
     // Safe default at time 0: ASSERT reset (on first cb tick)
-    @(vif.cb);
-    vif.cb.rst_n <= 1'b0;
+    @(vif.cb_drv);
+    vif.cb_drv.rst_n <= 1'b0;
 
     forever begin
       seq_item_port.get_next_item(tr);
@@ -176,27 +176,27 @@ class reset_monitor extends uvm_component;
   endfunction
 
   task run_phase(uvm_phase phase);
-    @(vif.cb);
-    rst_prev = vif.cb.rst_n;
+    @(vif.cb_mon);
+    rst_prev = vif.cb_mon.rst_n;
 
     forever begin
-      @(vif.cb);
+      @(vif.cb_mon);
 
       // 1 -> 0 : assert
-      if ((rst_prev === 1'b1) && (vif.cb.rst_n === 1'b0)) begin
+      if ((rst_prev === 1'b1) && (vif.cb_mon.rst_n === 1'b0)) begin
         #0;
         ev_reset_assert.trigger();
         `uvm_info("RST_MON", "Reset ASSERT -> trigger axi_mm_reset_assert", UVM_LOW)
       end
 
       // 0 -> 1 : deassert
-      if ((rst_prev === 1'b0) && (vif.cb.rst_n === 1'b1)) begin
+      if ((rst_prev === 1'b0) && (vif.cb_mon.rst_n === 1'b1)) begin
         #0;
         ev_reset_deassert.trigger();
         `uvm_info("RST_MON", "Reset DEASSERT -> trigger axi_mm_reset_deassert", UVM_LOW)
       end
 
-      rst_prev = vif.cb.rst_n;
+      rst_prev = vif.cb_mon.rst_n;
     end
   endtask
 endclass
@@ -218,7 +218,7 @@ class reset_agent extends uvm_agent;
   virtual axi_mm_reset_if.mp_monitor vif_mon;
 
   // ----------------------------
-  // NEW: POR knobs
+  // POR knobs
   // ----------------------------
   bit por_enable = 1'b1;
   int unsigned por_assert_cycles   = 50;
@@ -281,7 +281,7 @@ class reset_agent extends uvm_agent;
   endfunction
 
   // ----------------------------
-  // NEW: automatic POR
+  // automatic POR
   // ----------------------------
   task run_phase(uvm_phase phase);
     axi_mm_reset_seq por_seq;

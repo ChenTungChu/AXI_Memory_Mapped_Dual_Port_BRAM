@@ -506,8 +506,8 @@ class axi_mm_seq #(
             tr.set_beats_len(tr.len);
 
             if (dir_rw == AXI_WRITE) begin
-                foreach (tr.data_beats[i]) begin
-                    tr.data_beats[i]  = dir_wdata + i;
+                foreach (tr.wdata_beats[i]) begin
+                    tr.wdata_beats[i]  = dir_wdata + i;
                     tr.wstrb_beats[i] = dir_wstrb;
                 end
             end
@@ -580,8 +580,8 @@ class axi_mm_seq #(
 
             // payload
             if (tr.rw == AXI_WRITE) begin
-                foreach (tr.data_beats[i]) begin
-                    tr.data_beats[i]  = rand_data_word();
+                foreach (tr.wdata_beats[i]) begin
+                    tr.wdata_beats[i]  = rand_data_word();
                     tr.wstrb_beats[i] = rand_wstrb_mask(tr.size);
                 end
             end

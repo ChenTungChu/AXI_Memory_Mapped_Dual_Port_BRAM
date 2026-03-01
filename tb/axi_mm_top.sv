@@ -2,9 +2,7 @@
 `timescale 1ns/1ps
 
 `include "../interface/axi_mm_if.sv"
-`include "../reset/axi_mm_reset_if.sv"
-
-// commit interface (TB owns it)
+`include "../reset/axi_mm_reset_if.sv"          
 `include "../commit/axi_mm_commit_if.sv"
 
 import uvm_pkg::*;
@@ -94,7 +92,7 @@ module axi_mm_top;
         .axi0_if    (dma_if),
         .axi1_if    (core_if),
 
-        .commit_if  (commit_if_i.mp_producer) 
+        .commit_if  (commit_if_i.mp_producer)
     );
 
 `endif
@@ -120,31 +118,36 @@ module axi_mm_top;
         // --------------------------------------------------------
         // AXI agents
         // --------------------------------------------------------
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p0_agent", "vif_m",  dma_if.mp_master);
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p0_agent", "vif_mon",dma_if.mp_monitor);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p0_agent", "vif_m",   dma_if.mp_master);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p0_agent", "vif_mon", dma_if.mp_monitor);
 
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p1_agent", "vif_m",  core_if.mp_master);
-        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p1_agent", "vif_mon",core_if.mp_monitor);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p1_agent", "vif_m",   core_if.mp_master);
+        uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p1_agent", "vif_mon", core_if.mp_monitor);
 
         // --------------------------------------------------------
-        // Reset agent
+        // Reset agent (IMPORTANT FIX)
+        //   - DO NOT set the same key "vif" twice at "*.rst_agent"
+        //   - Use vif_drv / vif_mon at agent scope
+        //   - If you want legacy "vif", set it in drv/mon scopes separately
         // --------------------------------------------------------
         uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent", "vif_drv", reset_if_i.mp_driver);
         uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent", "vif_mon", reset_if_i.mp_monitor);
 
-        // optional legacy key
-        uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent", "vif", reset_if_i.mp_driver);
-        uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent", "vif", reset_if_i.mp_monitor);
+        // legacy compatibility (SAFE): drv/mon each gets its own "vif"
+        uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent.drv", "vif", reset_if_i.mp_driver);
+        uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent.mon", "vif", reset_if_i.mp_monitor);
 
         // --------------------------------------------------------
         // Commit monitor
         // --------------------------------------------------------
-        uvm_config_db#(virtual axi_mm_commit_if#(32,64,4,8).mp_monitor)::set(null, "*.commit_mon", "vif", commit_if_i.mp_monitor);
+        uvm_config_db#(virtual axi_mm_commit_if#(32,64,4,8).mp_monitor)::set(
+            null, "*.commit_mon", "vif", commit_if_i.mp_monitor
+        );
 
         // --------------------------------------------------------
         // Run test
         // --------------------------------------------------------
-        run_test("axi_mm_corner_test");
+        run_test("axi_mm_coverage_test");
     end
 
 endmodule
