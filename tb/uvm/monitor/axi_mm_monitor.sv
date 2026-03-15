@@ -377,6 +377,7 @@ class axi_mm_monitor #(
                 tr_struct.tr.len   = vif.cb_monitor.awlen;
                 tr_struct.tr.size  = vif.cb_monitor.awsize;
                 tr_struct.tr.burst = vif.cb_monitor.awburst;
+                tr_struct.tr.op_kind = OP_FULL;
 
                 tr_struct.tr.set_beats_len(tr_struct.tr.len);
                 tr_struct.beat_cnt = 0;
@@ -626,6 +627,7 @@ class axi_mm_monitor #(
                 new_e.tr.len   = vif.cb_monitor.arlen;
                 new_e.tr.size  = vif.cb_monitor.arsize;
                 new_e.tr.burst = vif.cb_monitor.arburst;
+                new_e.tr.op_kind = OP_FULL;
 
                 new_e.tr.set_beats_len(new_e.tr.len);
                 new_e.beat_cnt = 0;

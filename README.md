@@ -1,265 +1,271 @@
-AXI Dual-Port Multi-Clock BRAM
+# AXI Dual-Port Multi-Clock BRAM (Verification-Oriented Model)
 
-AXI4 Memory-Mapped True Dual-Port Scratchpad RAM
-
-Version: 1.0
+Version: 2.1  
 Author: Eric
 
-1. Overview
+## 1. Overview
 
-This module implements a synthesizable, IP-style True Dual-Port Block RAM with two fully independent AXI4 Memory-Mapped slave interfaces, each operating in its own clock domain.
+This module is a **verification-oriented**, multi-clock, dual-port **AXI4 Memory-Mapped scratchpad model**.
 
-It is designed as a low-latency shared scratchpad memory for:
+I mainly use it for:
+- Architecture exploration (DMA + accelerator style subsystems)
+- Subsystem-level integration testing
+- AXI protocol / ordering / backpressure verification
+- Multi-clock interaction testing
 
-DMA engines
+> Note  
+> This is **not** a vendor BRAM macro model and is **not meant to infer FPGA true dual-port BRAM**.  
+> The goal here is to make the behavior easier to verify and debug, with deterministic commit semantics and good observability.
 
-AI / ML accelerator cores
+---
 
-Multi-clock SoC subsystems
+## 2. What this model is trying to capture
 
-Each AXI port connects directly to one side of the memory without requiring any explicit CDC logic between ports.
+Instead of acting like a cycle-exact RAM macro, this model behaves more like:
+- A shared scratchpad accessed by **two independent AXI-MM slave ports**
+- Writes that become visible at a clear **burst commit boundary**
+- A conservative **READ_FIRST / no-forwarding** read behavior
+- Realistic backpressure through AXI ready/valid handshakes
 
-2. Key Features
-✔ True Dual-Port, Multi-Clock Operation
+---
 
-Port 0: AXI-MM Slave in dma_clk domain
+## 3. Key characteristics
 
-Port 1: AXI-MM Slave in core_clk domain
+### 3.1 Dual AXI4-MM slave interfaces (two ports, two clocks)
 
-Fully independent read and write paths per port
+| Port | Clock Domain | Intended Use |
+|---|---|---|
+| Port0 (`axi0_if`) | `dma_clk` | DMA / Host side |
+| Port1 (`axi1_if`) | `core_clk` | Accelerator core side |
 
-No cross-domain handshake or FIFO required
+Each port supports:
+- AW / W / B / AR / R channels
+- Burst types: **INCR / WRAP / FIXED**  
+  - FIXED is modeled as **constant-address access**
+- `WSTRB` byte enables
+- Backpressure through `*_ready`
 
-Intended to infer FPGA True Dual-Port BRAM (TDP RAM)
+Scope notes:
+- Responses are **OKAY only** (`BRESP/RRESP = 2'b00`)
+- Write data is assumed **in-order** with respect to the active AW  
+  (no W reordering across different AWs)
 
-Each port behaves as a standalone AXI slave connected to a shared memory array.
+---
 
-✔ AXI4 Memory-Mapped Interface
+### 3.2 Burst-level atomic commit
 
-Each port implements a complete AXI4-MM slave interface:
+Write beats are **buffered per burst**.
 
-AW, W, B, AR, R channels
+That means:
+- The memory array `mem_word[]` is **not updated beat-by-beat**
+- A single **commit engine** in the `dma_clk` domain commits **one burst at a time**
+- The memory image changes **atomically at burst commit boundary**
 
-Byte-wise write enable via WSTRB
+Write response timing is tied to commit completion:
+- **Port0:** `B` is generated only after commit finishes
+- **Port1:** the **last-beat ACK** back to `core_clk` is deferred until commit finishes, and core-side `B` is generated after that
 
-AXI burst support (configurable; see Parameters)
+This behavior was chosen mainly because it makes scoreboard alignment much cleaner.
 
-AXI response signaling (OKAY / SLVERR)
+---
 
-One AXI master per port is assumed. Arbitration between multiple masters must be handled externally.
+### 3.3 Apply and commit observability
 
-✔ Simulation-Oriented Safety Checks (Non-Synthesizable)
+After a burst is applied/committed, the DUT exposes it through two observation interfaces:
 
-The following mechanisms are intended for verification and debug only and may be excluded or simplified in synthesis:
+- `axi_mm_apply_if`
+- `axi_mm_commit_if`
 
-Write-Write conflict detection
+Both are handshaked and live in the `dma_clk` domain.
 
-Detects same-byte writes from both ports in the same cycle
+These are mainly for:
+- Scoreboard alignment
+- Debugging tricky cross-clock cases
+- Making burst visibility easier to reason about in verification
 
-Read-After-Write forwarding (cross-port)
+---
 
-Ensures deterministic read behavior in simulation
+### 3.4 READ_FIRST behavior
 
-Starvation monitoring
+Reads are intentionally conservative:
+- Reads only observe **committed** `mem_word[]` state
+- No read forwarding / bypass between ports
+- Read path models **2-cycle latency**
+- Each port also has its own read FIFO, so the R channel can still stall through `rready`
 
-Warns if one port is permanently blocked by the other
+---
 
-✔ Parameterized Design
-Parameter	Description
-DATA_WIDTH	Data width per word (32 / 64 / 128 bits)
-ADDR_WIDTH	AXI address width
+## 4. Internal memory model
+
+Behavioral storage:
+
+```systemverilog
+logic [DATA_WIDTH-1:0] mem_word [0:DEPTH_WORDS-1];
+
+Addressing:
+
+AXI addresses are treated as byte addresses
+
+Internally, accesses are mapped to words as:
+
+word_index = (byte_addr >> log2(DATA_WIDTH/8)) % DEPTH_WORDS
+
+Byte lane mapping:
+
+lane 0 = WDATA[7:0] (lowest byte address in the word)
+
+WSTRB[0] controls lane 0, and so on
+
+5. Main parameters
+Parameter	Meaning
+DATA_WIDTH, ADDR_WIDTH, ID_WIDTH	AXI widths
 DEPTH_WORDS	Memory depth in words
-ID_WIDTH	AXI transaction ID width
-3. Architecture Overview
-                +-------------------------------+
-   dma_clk ---> |  AXI-MM Slave Port 0          |
-                |    (frontend logic)           |
-                +---------------+---------------+
-                                |
-                                | Port 0 Access
-                                v
-                      +-------------------+
-                      | True Dual-Port    |
-                      | BRAM Memory       |
-                      | (byte-addressable)|
-                                ^
-                                |
-                +---------------+---------------+
-   core_clk --> |  AXI-MM Slave Port 1          |
-                |    (frontend logic)           |
-                +-------------------------------+
+MAX_BURST_BEATS	Maximum buffered beats per burst
+RD_FIFO_DEPTH	Per-port read FIFO depth
+WR_AW_DEPTH, WR_B_DEPTH	Outstanding buffering for AW/B
+P0_WEIGHT	Weighted arbitration bias in commit engine
+STARVE_THRESHOLD, ASSERT_ON_STARVE	Starvation detection / warning
+LOG_ENABLE, LOG_INTERVAL_CYCLES	Sim-only performance logging
+6. Arbitration / fairness model
 
+When both ports already have a fully buffered burst ready to commit:
 
-The memory array is implemented as a byte-addressable structure:
+The commit engine selects one burst using a weighted policy
 
-logic [7:0] mem_byte [0:DEPTH_BYTES-1];
+Port0 can be biased through P0_WEIGHT
 
+Port1 starvation is monitored
 
-This enables:
+A simulation warning can be generated if Port1 is not served for too long
 
-Byte-granular WSTRB writes
+7. Verification status
 
-Per-byte conflict detection
+This model has been verified in a UVM 1.2 environment with:
 
-Clean inference of true dual-port BRAM resources
+smoke test
 
-4. Multi-Clock Behavior
-✔ Independent Clock Domains
+directed test
 
-dma_clk drives Port 0
+random test
 
-core_clk drives Port 1
+corner-case regression
 
-Clocks may be unrelated in frequency and phase
+coverage-oriented regression
 
-No explicit CDC logic is implemented between the ports.
+Current status
 
-✔ Memory Coherency Model
+The latest runs completed with:
 
-This design assumes a True Dual-Port RAM primitive where:
+Smoke test: PASS
 
-Each port has its own clock
+Directed test: PASS
 
-The memory hardware resolves internal read/write timing
+Random test: PASS
 
-On FPGAs, this maps naturally to vendor-provided TDP BRAM blocks.
+Corner test complete suite: PASS
 
-Important note:
-Cross-port read/write ordering is deterministic only within the guarantees provided by the underlying RAM primitive and the implemented forwarding logic (if enabled in simulation).
+Coverage test Case 8 (complete coverage suite): PASS
 
-✔ Hazard Handling Rules
-Condition	Handling
-Write-After-Write (same byte, same cycle)	Detected → SLVERR (simulation)
-Read-After-Write (cross-port)	Forwarded data returned (simulation)
-Starvation	Warning issued after configurable timeout
+Scoreboard final results are now clean with no mismatches in the completed regression runs above.
 
-These checks are intended to catch system-level integration bugs early.
+Coverage progress
 
-5. Design Assumptions
+During coverage closure, I found that the original COV4 stress case needed to be split more clearly into:
 
-This module assumes:
+boundary-focused
 
-AXI masters follow the AXI4 protocol correctly
+end-of-memory-focused
 
-Proper VALID/READY handshakes
+After reworking that part and aligning the scoreboard with the DUT's apply/commit visibility behavior, the total covergroup coverage improved from around 72% to:
 
-Well-formed bursts (no malformed AxLEN)
+96.14% total covergroup coverage
 
-WSTRB aligns with DATA_WIDTH
+This was a pretty significant improvement and helped close the remaining mismatch issue that only showed up in the more stressful coverage runs.
 
-One AXI master per port
+8. Scoreboard / stability note
 
-Clock assumptions:
+Because this is a multi-clock behavioral model (dma_clk commit engine + core_clk read side), the verification environment uses a conservative stability window to avoid false mismatches caused by cross-domain timing.
 
-dma_clk and core_clk are stable
+Scoreboard setting:
 
-No excessive jitter or glitching
+COMMIT_STABLE_DELAY = 30ns
 
-6. Design Guarantees
+Meaning:
 
-This module guarantees:
+after a burst is considered visible/committed in the testbench model,
 
-Correct dual-port shared-memory semantics
+the scoreboard waits 30ns
 
-Independent AXI-MM operation per port
+before treating that memory state as stable for cross-domain comparison
 
-Deterministic behavior within the defined hazard rules
+This is a verification-side constraint, not a hardware guarantee.
+It was added to keep regressions deterministic and to avoid false failures in aggressive cross-clock stress cases.
 
-No explicit CDC paths between clock domains
+9. Limitations / non-goals
 
-Fully synthesizable RTL (excluding optional debug logic)
+By design, this model does not try to do everything.
 
-7. Integration Guide
-7.1 Typical DMA + Accelerator Integration
-       External DRAM
-           |
-       +-----------+
-       | AXI DMA   |
-       +-----------+
-              |
-              | AXI-MM (dma_clk)
-              v
-        +----------------+
-        |  Port 0        |
-        |  AXI BRAM IP   |
-        |                |
-        |                | AXI-MM (core_clk)
-        |                v
-        |         Accelerator Core
-        +----------------+
+Current non-goals:
 
-Port 0 (dma_clk)
+Not intended to infer true dual-port BRAM macros
+
+Does not model vendor-specific RAM collision modes
+
+Does not model a real hardware CDC RAM structure
+
+OKAY-only responses
+
+Focus is verification/debug friendliness, not exact RAM macro behavior
+
+10. Read burst admission note
+
+Read requests are admitted based on internal FIFO capacity.
+
+A read burst is only accepted if:
+
+(ARLEN + 1) <= RD_FIFO_DEPTH
+
+This is intentional.
+The model does not accept a read burst that it cannot buffer completely.
+
+So in practice:
+
+If a master issues bursts longer than RD_FIFO_DEPTH, ARREADY may stay low
+
+The read can stall until the burst size is acceptable
+
+Typical expectation:
+
+Use chunked reads, which is common for DMA / tiled accelerator access
+
+Or increase RD_FIFO_DEPTH if longer bursts are needed
+
+11. Typical subsystem usage
+
+Conceptually, this model sits between a DMA side and a core side:
+
+External DRAM
+    |
+ +--------+
+ | AXI DMA|  (dma_clk)
+ +--------+
+     |
+     v
+ +---------------------------+
+ | Dual-Port AXI-MM BRAM     |
+ | - burst commit semantics  |
+ | - apply/commit visibility |
+ +---------------------------+
+     |
+     v
+ +------------------+
+ | GEMM / AI Core   |  (core_clk)
+ +------------------+
 
 Typical usage:
 
-DMA engines (MM2S / S2MM)
+weight / activation scratchpad
 
-CPU or SoC AXI masters
+DMA ↔ core clock decoupling layer
 
-Port 1 (core_clk)
-
-Typical usage:
-
-Accelerator reads (inputs / weights)
-
-Intermediate result storage
-
-Partial accumulation buffers
-
-7.2 Addressing Scheme
-
-AXI addresses are byte addresses
-
-Internal word index calculation:
-
-WORD_INDEX = AXI_ADDR >> $clog2(DATA_WIDTH / 8)
-
-
-Example (DATA_WIDTH = 64):
-
-AXI Address = 0x20
-WORD_INDEX = 0x20 >> 3 = 0x4
-
-8. Error Conditions
-Condition	Detection	Response
-Same-byte write conflict	Yes	SLVERR + sim error
-Burst crosses memory boundary	Optional	SLVERR
-Misaligned AXI address	Optional	SLVERR
-Port starvation	Yes	Simulation warning
-9. Recommended Use Cases
-
-This BRAM is well suited for:
-
-Small tensor tiles
-
-Weight blocks
-
-Line buffers
-
-Sliding-window storage
-
-DMA ↔ Core clock decoupling
-
-Common targets:
-
-CNN / RNN / Transformer accelerators
-
-Systolic arrays
-
-MAC clusters
-
-10. Possible Future Extensions
-
-ECC / SECDED
-
-Parity per byte
-
-AXI QoS or priority support
-
-Performance counters
-
-Burst repacking / prefetch buffers
-
-11. License
-
-MIT License
+deterministic shared memory boundary for subsystem testing

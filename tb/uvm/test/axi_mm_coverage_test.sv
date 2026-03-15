@@ -22,6 +22,10 @@ class axi_mm_coverage_test extends axi_mm_corner_test; // ←重點：不要 ext
   int unsigned N_EDGE   = 1200;
   int unsigned N_READY  = 1200;
 
+  // COV4 mode control
+  bit COV4_RUN_BOUNDARY   = 1;
+  bit COV4_RUN_END_OF_MEM = 1;
+
 
   // ------------------------------------------------------------
   // Plusarg-driven case selection (Method A) - Questa safe
@@ -183,32 +187,67 @@ class axi_mm_coverage_test extends axi_mm_corner_test; // ←重點：不要 ext
   // ---------------------------------------
   task automatic run_cov4_boundary_edge_sweep();
     axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH) s0, s1;
-    banner_case("COV4", "Boundary + End-of-mem biased sweep");
+
+    banner_case("COV4",
+      $sformatf("Boundary/End-of-mem biased sweep (boundary=%0d end_of_mem=%0d)",
+                COV4_RUN_BOUNDARY, COV4_RUN_END_OF_MEM));
 
     cfg_driver_stress_off();
     cfg_driver_hold_ready(1,1);
 
-    s0 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_s0");
-    s1 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_s1");
-    s0.n_tr = N_EDGE; s1.n_tr = N_EDGE;
+    if (!COV4_RUN_BOUNDARY && !COV4_RUN_END_OF_MEM) begin
+      `uvm_warning("COV4",
+        "run_cov4_boundary_edge_sweep() skipped because both COV4_RUN_BOUNDARY and COV4_RUN_END_OF_MEM are 0")
+      return;
+    end
 
-    s0.win0_base = WIN0_BASE; s0.win1_base = WIN1_BASE;
-    s1.win0_base = WIN0_BASE; s1.win1_base = WIN1_BASE;
-
+    // -----------------------------
     // phase A: boundary
-    s0.bias_boundary = 1; s1.bias_boundary = 1;
-    fork
-      run_cov_seq(env_h.p0_agent.seqr, s0);
-      begin #1ns; run_cov_seq(env_h.p1_agent.seqr, s1); end
-    join
+    // -----------------------------
+    if (COV4_RUN_BOUNDARY) begin
+      s0 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_boundary_s0");
+      s1 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_boundary_s1");
 
+      s0.n_tr = N_EDGE;
+      s1.n_tr = N_EDGE;
+
+      s0.win0_base = WIN0_BASE; s0.win1_base = WIN1_BASE;
+      s1.win0_base = WIN0_BASE; s1.win1_base = WIN1_BASE;
+
+      s0.bias_boundary   = 1;
+      s1.bias_boundary   = 1;
+      s0.bias_end_of_mem = 0;
+      s1.bias_end_of_mem = 0;
+
+      fork
+        run_cov_seq(env_h.p0_agent.seqr, s0);
+        begin #1ns; run_cov_seq(env_h.p1_agent.seqr, s1); end
+      join
+    end
+
+    // -----------------------------
     // phase B: end-of-mem
-    s0.bias_boundary = 0; s1.bias_boundary = 0;
-    s0.bias_end_of_mem = 1; s1.bias_end_of_mem = 1;
-    fork
-      run_cov_seq(env_h.p0_agent.seqr, s0);
-      begin #1ns; run_cov_seq(env_h.p1_agent.seqr, s1); end
-    join
+    // -----------------------------
+    if (COV4_RUN_END_OF_MEM) begin
+      s0 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_eom_s0");
+      s1 = axi_mm_cov_rand_seq#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH)::type_id::create("cov4_eom_s1");
+
+      s0.n_tr = N_EDGE;
+      s1.n_tr = N_EDGE;
+
+      s0.win0_base = WIN0_BASE; s0.win1_base = WIN1_BASE;
+      s1.win0_base = WIN0_BASE; s1.win1_base = WIN1_BASE;
+
+      s0.bias_boundary   = 0;
+      s1.bias_boundary   = 0;
+      s0.bias_end_of_mem = 1;
+      s1.bias_end_of_mem = 1;
+
+      fork
+        run_cov_seq(env_h.p0_agent.seqr, s0);
+        begin #1ns; run_cov_seq(env_h.p1_agent.seqr, s1); end
+      join
+    end
   endtask
 
   // ---------------------------------------
@@ -275,9 +314,6 @@ class axi_mm_coverage_test extends axi_mm_corner_test; // ←重點：不要 ext
     phase.raise_objection(this);
 
     `uvm_info("COVERAGE_TEST", "Starting AXI-MM Coverage Test", UVM_MEDIUM)
-
-    // base_test 應該已經有 env_h + reset helper
-    env_h.do_initial_reset(phase, "coverage_test initial reset", 1_000_000ns);
 
     cfg_driver_stress_off();
     cfg_driver_hold_ready(1,1);

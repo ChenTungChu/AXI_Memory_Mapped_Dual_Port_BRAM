@@ -1,27 +1,57 @@
 // File: axi_mm_dual_port_bram.sv
-// Behavioral Multi-clock Dual-port AXI4-MM BRAM (READ_FIRST)
+// Behavioral Multi-clock Dual-port AXI4-MM scratchpad (READ_FIRST)
 //
-// IMPORTANT BEHAVIOR (to match atomic-at-B scoreboards):
-// - Writes are COMMITTED to mem_word[] only when an entire burst is complete.
-// - Commit is atomic per burst (no interleaving beats from different bursts).
-// - B response is issued only AFTER commit completes.
+// Intent / positioning:
+// - This is a verification-oriented behavioral memory model (not a vendor BRAM macro).
+// - Two independent AXI4-MM slave ports share one behavioral storage array.
+// - The design emphasizes deterministic, burst-level "commit" semantics suitable for scoreboards.
 //
-// - Port0 on dma_clk, Port1 on core_clk.
-// - Single writer commit engine in dma_clk.
-// - Read path: synchronous BRAM model w/ 2-cycle latency + per-port read FIFO (unchanged).
+// IMPORTANT BEHAVIOR (aligned with atomic-at-B / atomic-at-commit scoreboards):
+// - W beats are buffered per burst (writes are NOT applied beat-by-beat into mem_word[]).
+// - A single commit engine (dma_clk domain) commits ONE burst at a time.
+//   * Memory update is atomic per burst (the mem_word[] image changes at burst commit boundary).
+//   * Commits from Port0/Port1 are serialized by the commit engine (no partial interleaving in memory update).
+// - Apply / commit observation:
+//   * After mem_word[] is updated, apply_if emits the applied beats (handshaked).
+//   * Then commit_if emits the committed beats (handshaked).
+// - Write response timing:
+//   * Port0: B is enqueued only after commit_if emission completes.
+//   * Port1: the last-beat ACK back to core_clk is deferred until commit+emit completes; core-side B is then generated.
 //
-// Assumptions / scope:
-// - INCR and WRAP supported (FIXED treated as constant addr).
-// - B response OKAY.
-// - W channel in-order w.r.t AW FIFO head (AXI compliant).
-// - READ_FIRST: no read forwarding; read returns old data if same-cycle write to same word.
+// Clocking / domains:
+// - Port0 runs on dma_clk (AXI slave interface axi0_if).
+// - Port1 runs on core_clk (AXI slave interface axi1_if).
+// - Port1 W beats cross into dma_clk via a simple toggle-based request/ack bridge (beat-level transfer).
+// - The shared storage is a single behavioral array updated only by the dma_clk commit engine.
+//
+// Verification note (scoreboard stabilization window):
+// - This model is multi-clock (Port0: dma_clk, Port1: core_clk). To avoid race-condition
+//   false failures in cross-domain checking, the UVM scoreboard uses a conservative
+//   stabilization delay after a burst is considered committed.
+// - Recommended scoreboard setting:
+//     COMMIT_STABLE_DELAY = 30ns
+// - This is a TESTBENCH constraint (verification convenience), not a hardware guarantee
+//   and not a DUT parameter.
+//
+// Read path model:
+// - Synchronous read model with 2-cycle latency (q1/q2 pipeline) and per-port read FIFO.
+// - No read forwarding/bypass. Reads observe committed mem_word[] state only (READ_FIRST philosophy).
+//
+// Assumptions / scope (kept intentionally narrow for verification use):
+// - Burst types:
+//   * INCR and WRAP are supported.
+//   * FIXED is supported as constant-address accesses (AW/AR burst != INCR/WRAP => addr held constant).
+// - Responses:
+//   * BRESP/RRESP are OKAY (2'b00) only.
+// - Write ordering:
+//   * W channel is assumed in-order with respect to the active AW (no W reordering across different AW).
+// - No vendor-specific collision modes are modeled; this is not intended to infer a true dual-port BRAM macro.
 //
 // Endianness / lane mapping:
 // - lane 0 = WDATA[7:0], lowest byte address in word.
 // - WSTRB[0] controls lane 0, etc.
 
 `timescale 1ns/1ps
-
 
 module axi_mm_dual_port_bram #(
     parameter int ADDR_WIDTH       = 32,
@@ -56,8 +86,12 @@ module axi_mm_dual_port_bram #(
     axi_mm_if axi0_if,
     axi_mm_if axi1_if,
 
-    // Commit observation interface (dma_clk domain)
+    // Apply observation interface (dma_clk domain, 1 event per applied beat)
+    axi_mm_apply_if.mp_producer  apply_if,
+
+    // Commit observation interface (dma_clk domain, 1 event per committed beat)
     axi_mm_commit_if.mp_producer commit_if,
+
     output logic ce_idle
 );
 
@@ -178,7 +212,7 @@ module axi_mm_dual_port_bram #(
     // ------------------------------------------------------------
     typedef struct packed {
         logic [IDW-1:0]         rid;
-        logic                  last;
+        logic                   last;
         logic [DATA_WIDTH-1:0]  data;
     } rd_item_t;
 
@@ -251,8 +285,6 @@ module axi_mm_dual_port_bram #(
 
     // ============================================================
     // PORT1 (core_clk) : WRITE path (AW FIFO + local beat + bridge)
-    // - DMA side collects beats into p1 burst buffer.
-    // - ACK for last beat is delayed until commit done (atomic-at-B).
     // ============================================================
     aw_item_t               p1_aw_fifo [0:WR_AW_DEPTH-1];
     logic [WR_AW_PTR_W-1:0] p1_aw_wptr, p1_aw_rptr;
@@ -300,7 +332,7 @@ module axi_mm_dual_port_bram #(
     logic [BYTE_PER_WORD-1:0] bridge_p1_wstrb_core;
     logic [2:0]               bridge_p1_size_core;
     logic                     bridge_p1_is_last_core;
-    logic [IDW-1:0]           bridge_p1_awid_core; // carry burst ID for dma-side burst buffer
+    logic [IDW-1:0]           bridge_p1_awid_core;
     logic                     p1_req_toggle_core;
 
     // core-side flow control
@@ -330,10 +362,10 @@ module axi_mm_dual_port_bram #(
     int unsigned           p1_buf_beats_written;
     logic                  p1_burst_ready;
     logic [IDW-1:0]        p1_burst_id;
-    logic                  p1_lastbeat_ack_deferred; // last beat buffered but ack delayed until commit done
+    logic                  p1_lastbeat_ack_deferred;
 
     // ============================================================
-    // READ path (unchanged): Port0
+    // READ path : Port0
     // ============================================================
     logic [IDW-1:0]        p0_arid;
     logic [ADDR_WIDTH-1:0] p0_araddr;
@@ -350,9 +382,9 @@ module axi_mm_dual_port_bram #(
 
     logic [DATA_WIDTH-1:0] p0_rd_q1, p0_rd_q2;
 
-    logic            p0_meta_v1, p0_meta_v2, p0_meta_v3;
-    logic [IDW-1:0]   p0_meta_rid1, p0_meta_rid2, p0_meta_rid3;
-    logic            p0_meta_last1, p0_meta_last2, p0_meta_last3;
+    logic                  p0_meta_v1, p0_meta_v2, p0_meta_v3;
+    logic [IDW-1:0]        p0_meta_rid1, p0_meta_rid2, p0_meta_rid3;
+    logic                  p0_meta_last1, p0_meta_last2, p0_meta_last3;
 
     rd_item_t                 p0_rd_fifo [0:RD_FIFO_DEPTH-1];
     logic [RD_PTR_W-1:0]      p0_rd_wptr, p0_rd_rptr;
@@ -375,7 +407,7 @@ module axi_mm_dual_port_bram #(
     always_comb p0_rdata = p0_rd_fifo[p0_rd_rptr].data;
 
     // ============================================================
-    // READ path (unchanged): Port1
+    // READ path : Port1
     // ============================================================
     logic [IDW-1:0]        p1_arid;
     logic [ADDR_WIDTH-1:0] p1_araddr;
@@ -392,9 +424,9 @@ module axi_mm_dual_port_bram #(
 
     logic [DATA_WIDTH-1:0] p1_rd_q1, p1_rd_q2;
 
-    logic            p1_meta_v1, p1_meta_v2, p1_meta_v3;
-    logic [IDW-1:0]   p1_meta_rid1, p1_meta_rid2, p1_meta_rid3;
-    logic            p1_meta_last1, p1_meta_last2, p1_meta_last3;
+    logic                  p1_meta_v1, p1_meta_v2, p1_meta_v3;
+    logic [IDW-1:0]        p1_meta_rid1, p1_meta_rid2, p1_meta_rid3;
+    logic                  p1_meta_last1, p1_meta_last2, p1_meta_last3;
 
     rd_item_t                 p1_rd_fifo [0:RD_FIFO_DEPTH-1];
     logic [RD_PTR_W-1:0]      p1_rd_wptr, p1_rd_rptr;
@@ -417,7 +449,7 @@ module axi_mm_dual_port_bram #(
     always_comb p1_rdata = p1_rd_fifo[p1_rd_rptr].data;
 
     // ============================================================
-    // Port0 FSM (dma_clk): AW FIFO + burst buffer fill + B out + AR/R
+    // Port0 FSM (dma_clk)
     // ============================================================
     always_ff @(posedge dma_clk or negedge dma_rst_n) begin
         if (!dma_rst_n) begin
@@ -463,7 +495,6 @@ module axi_mm_dual_port_bram #(
             p0_rd_count <= '0;
 
         end else begin
-            // AWREADY gating:
             begin
                 logic awready_next;
                 int unsigned reserved;
@@ -475,7 +506,6 @@ module axi_mm_dual_port_bram #(
                 axi0_if.awready <= awready_next;
             end
 
-            // push AW into FIFO
             if (axi0_if.awvalid && axi0_if.awready) begin
                 p0_aw_fifo[p0_aw_wptr].id    <= axi0_if.awid;
                 p0_aw_fifo[p0_aw_wptr].addr  <= axi0_if.awaddr;
@@ -486,7 +516,6 @@ module axi_mm_dual_port_bram #(
                 p0_aw_count <= p0_aw_count + 1'b1;
             end
 
-            // load next AW into active only when:
             if (!p0_aw_active && !p0_burst_ready && !p0_aw_empty) begin
                 p0_awid    <= p0_aw_fifo[p0_aw_rptr].id;
                 p0_awaddr  <= p0_aw_fifo[p0_aw_rptr].addr;
@@ -504,7 +533,6 @@ module axi_mm_dual_port_bram #(
                 p0_aw_count <= p0_aw_count - 1'b1;
             end
 
-            // buffer W beats (do not write mem here)
             if (p0_aw_active && p0_w_hs) begin
                 logic [ADDR_WIDTH-1:0] beat_addr;
                 logic is_last_calc;
@@ -532,7 +560,6 @@ module axi_mm_dual_port_bram #(
                 end
             end
 
-            // B output register (AXI-friendly)
             begin
                 logic hs;
                 hs = p0_b_out_valid && axi0_if.bready;
@@ -563,9 +590,6 @@ module axi_mm_dual_port_bram #(
                 axi0_if.bresp  <= p0_b_out.bresp;
             end
 
-            // ----------------------------
-            // READ control (unchanged)
-            // ----------------------------
             if (!p0_ar_active) begin
                 if (axi0_if.arvalid) begin
                     int unsigned need;
@@ -655,7 +679,7 @@ module axi_mm_dual_port_bram #(
     end
 
     // ============================================================
-    // Port1 FSM (core_clk): AW FIFO + one-beat local buffer + bridge + B + AR/R
+    // Port1 FSM (core_clk)
     // ============================================================
     always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
@@ -698,7 +722,6 @@ module axi_mm_dual_port_bram #(
             p1_sent_is_last <= 1'b0;
             p1_sent_awid    <= '0;
 
-            // read
             p1_ar_active   <= 1'b0;
             p1_issue_idx   <= 0;
             p1_total_beats <= 0;
@@ -715,11 +738,9 @@ module axi_mm_dual_port_bram #(
             p1_rd_count <= '0;
 
         end else begin
-            // sync ack toggle from dma
             p1_ack_toggle_sync1_core <= p1_ack_toggle_dma;
             p1_ack_toggle_sync2_core <= p1_ack_toggle_sync1_core;
 
-            // AWREADY gating with B FIFO reservation
             begin
                 logic awready_next;
                 int unsigned reserved;
@@ -730,7 +751,6 @@ module axi_mm_dual_port_bram #(
                 axi1_if.awready <= awready_next;
             end
 
-            // push AW into FIFO
             if (axi1_if.awvalid && axi1_if.awready) begin
                 p1_aw_fifo[p1_aw_wptr].id    <= axi1_if.awid;
                 p1_aw_fifo[p1_aw_wptr].addr  <= axi1_if.awaddr;
@@ -742,7 +762,6 @@ module axi_mm_dual_port_bram #(
                 p1_aw_count <= p1_aw_count + 1'b1;
             end
 
-            // load next AW to active
             if (!p1_aw_active && !p1_aw_empty) begin
                 p1_awid    <= p1_aw_fifo[p1_aw_rptr].id;
                 p1_awaddr  <= p1_aw_fifo[p1_aw_rptr].addr;
@@ -757,7 +776,6 @@ module axi_mm_dual_port_bram #(
                 p1_aw_count <= p1_aw_count - 1'b1;
             end
 
-            // capture W into local beat buffer
             if (p1_aw_active && p1_w_hs) begin
                 logic [ADDR_WIDTH-1:0] beat_addr;
                 logic is_last_calc;
@@ -778,7 +796,6 @@ module axi_mm_dual_port_bram #(
                 p1_wbeat_cnt <= p1_wbeat_cnt + 1;
             end
 
-            // send beat over bridge when allowed
             if (p1_local_wr_valid &&
                 !p1_req_outstanding &&
                 (p1_req_toggle_core == p1_ack_toggle_sync2_core)) begin
@@ -797,14 +814,12 @@ module axi_mm_dual_port_bram #(
                 p1_req_outstanding <= 1'b1;
             end
 
-            // consume ACK (one per beat); NOTE: last-beat ack is delayed until commit done in dma
             if (p1_ack_toggle_sync2_core != p1_ack_toggle_last_seen_core) begin
                 p1_ack_toggle_last_seen_core <= p1_ack_toggle_sync2_core;
 
                 p1_req_outstanding <= 1'b0;
                 p1_local_wr_valid  <= 1'b0;
 
-                // if that ack corresponded to last beat, then the burst is committed and we can push B
                 if (p1_sent_is_last) begin
                     if (!p1_b_full) begin
                         p1_b_fifo[p1_b_wptr].bid   <= p1_sent_awid;
@@ -816,7 +831,6 @@ module axi_mm_dual_port_bram #(
                 end
             end
 
-            // B output reg
             begin
                 logic hs;
                 hs = p1_b_out_valid && axi1_if.bready;
@@ -847,9 +861,6 @@ module axi_mm_dual_port_bram #(
                 axi1_if.bresp  <= p1_b_out.bresp;
             end
 
-            // ----------------------------
-            // READ control (unchanged)
-            // ----------------------------
             if (!p1_ar_active) begin
                 if (axi1_if.arvalid) begin
                     int unsigned need;
@@ -939,10 +950,7 @@ module axi_mm_dual_port_bram #(
     end
 
     // ============================================================
-    // Sync + stage beats from core->dma, then dma buffers into p1 burst buffer.
-    // ACK toggle rules:
-    // - non-last beat: ACK immediately after buffering into p1_buf[]
-    // - last beat: ACK is DEFERRED until commit engine finishes committing the whole burst
+    // Sync + stage beats from core->dma, then dma buffers into p1 burst buffer
     // ============================================================
     always_ff @(posedge dma_clk or negedge dma_rst_n) begin
         if (!dma_rst_n) begin
@@ -966,11 +974,9 @@ module axi_mm_dual_port_bram #(
             p1_lastbeat_ack_deferred <= 1'b0;
 
         end else begin
-            // 2-FF sync req toggle
             p1_req_toggle_sync1_dma <= p1_req_toggle_core;
             p1_req_toggle_sync2_dma <= p1_req_toggle_sync1_dma;
 
-            // capture new staged beat only if stage is empty
             if (!staged_p1_valid_dma &&
                 (p1_req_toggle_sync2_dma != p1_req_toggle_last_seen_dma)) begin
 
@@ -985,7 +991,6 @@ module axi_mm_dual_port_bram #(
                 p1_req_toggle_last_seen_dma <= p1_req_toggle_sync2_dma;
             end
 
-            // when staged beat valid, buffer it into p1 burst buffer if allowed
             if (staged_p1_valid_dma && !p1_burst_ready) begin
                 if (p1_buf_beats_written < MAX_BURST_BEATS) begin
                     p1_buf[p1_buf_beats_written].byte_addr <= staged_p1_addr_dma;
@@ -1010,14 +1015,50 @@ module axi_mm_dual_port_bram #(
     end
 
     // ============================================================
-    // BRAM READ pipelines (READ_FIRST) - 2-cycle latency (unchanged)
+    // Read-data formatting helper
+    // Keep only the requested byte lanes for this beat; other lanes are zeroed.
+    // ============================================================
+    function automatic logic [DATA_WIDTH-1:0] format_read_data(
+        input logic [DATA_WIDTH-1:0] raw_word,
+        input logic [ADDR_WIDTH-1:0] byte_addr,
+        input logic [2:0]            size
+    );
+        logic [DATA_WIDTH-1:0] out;
+        int unsigned off;
+        int unsigned bytes;
+        int unsigned b;
+        int unsigned lane;
+        begin
+            out   = '0;
+            off   = (byte_addr % BYTE_PER_WORD);
+            bytes = size_to_bytes(size);
+
+            if (bytes > BYTE_PER_WORD)
+                bytes = BYTE_PER_WORD;
+
+            for (b = 0; b < bytes; b++) begin
+                lane = (off + b) % BYTE_PER_WORD;
+                out[8*lane +: 8] = raw_word[8*lane +: 8];
+            end
+
+            format_read_data = out;
+        end
+    endfunction
+
+    // ============================================================
+    // BRAM READ pipelines (READ_FIRST) - 2-cycle latency
     // ============================================================
     always_ff @(posedge dma_clk or negedge dma_rst_n) begin
         if (!dma_rst_n) begin
             p0_rd_q1 <= '0;
             p0_rd_q2 <= '0;
         end else begin
-            if (p0_rd_issue) p0_rd_q1 <= mem_word[word_index(p0_rd_addr)];
+            if (p0_rd_issue)
+                p0_rd_q1 <= format_read_data(
+                    mem_word[word_index(p0_rd_addr)],
+                    p0_rd_addr,
+                    p0_arsize
+                );
             p0_rd_q2 <= p0_rd_q1;
         end
     end
@@ -1027,16 +1068,18 @@ module axi_mm_dual_port_bram #(
             p1_rd_q1 <= '0;
             p1_rd_q2 <= '0;
         end else begin
-            if (p1_rd_issue) p1_rd_q1 <= mem_word[word_index(p1_rd_addr)];
+            if (p1_rd_issue)
+                p1_rd_q1 <= format_read_data(
+                    mem_word[word_index(p1_rd_addr)],
+                    p1_rd_addr,
+                    p1_arsize
+                );
             p1_rd_q2 <= p1_rd_q1;
         end
     end
 
     // ============================================================
     // Commit Engine (dma_clk): burst-end atomic mem update
-    // - Apply ALL beats into mem_word[] first (atomic at burst end)
-    // - Then emit commit_if beats (handshaked) AFTER mem is updated
-    // - Then issue B response (and P1 deferred ACK) after emit completes
     // ============================================================
     typedef enum logic [2:0] {
         CE_IDLE,
@@ -1053,6 +1096,7 @@ module axi_mm_dual_port_bram #(
     int unsigned ce_idx;
     int unsigned ce_total;
     logic [IDW-1:0] ce_bid;
+    logic           ce_apply_sent;
 
     int unsigned           ce_uniq_cnt;
     int unsigned           ce_find_j;
@@ -1065,8 +1109,6 @@ module axi_mm_dual_port_bram #(
     logic [31:0] p1_starve_cnt;
     logic        p1_starve_asserted;
 
-
-    // helper: apply one beat into a word (READ_FIRST model, no forwarding)
     function automatic logic [DATA_WIDTH-1:0] apply_one_beat_to_word(
         input logic [DATA_WIDTH-1:0]    cur_word,
         input logic [ADDR_WIDTH-1:0]    byte_addr,
@@ -1097,6 +1139,7 @@ module axi_mm_dual_port_bram #(
             ce_idx   <= 0;
             ce_total <= 0;
             ce_bid   <= '0;
+            ce_apply_sent <= 1'b0;
 
             ce_uniq_cnt <= 0;
 
@@ -1111,7 +1154,16 @@ module axi_mm_dual_port_bram #(
             perf_p0_bursts     <= 0;
             perf_p1_bursts     <= 0;
 
-            // commit_if reset
+            apply_if.cb_producer.valid     <= 1'b0;
+            apply_if.cb_producer.port      <= 1'b0;
+            apply_if.cb_producer.id        <= '0;
+            apply_if.cb_producer.beat_idx  <= '0;
+            apply_if.cb_producer.byte_addr <= '0;
+            apply_if.cb_producer.wdata     <= '0;
+            apply_if.cb_producer.wstrb     <= '0;
+            apply_if.cb_producer.size      <= '0;
+            apply_if.cb_producer.last      <= 1'b0;
+
             commit_if.cb_producer.valid     <= 1'b0;
             commit_if.cb_producer.port      <= 1'b0;
             commit_if.cb_producer.id        <= '0;
@@ -1125,10 +1177,9 @@ module axi_mm_dual_port_bram #(
         end else begin
             perf_total_cycles <= perf_total_cycles + 1;
 
-            // default: no commit event unless we emit this cycle
+            apply_if.cb_producer.valid  <= 1'b0;
             commit_if.cb_producer.valid <= 1'b0;
 
-            // starvation counter when p1 is ready but not served
             if (p1_burst_ready && (ce_state == CE_IDLE)) begin
                 if (!p0_burst_ready) begin
                     p1_starve_cnt <= 0;
@@ -1148,11 +1199,9 @@ module axi_mm_dual_port_bram #(
             end
 
             unique case (ce_state)
-                // ------------------------------------------------------------
-                // Choose next burst to commit (RR weighted)
-                // ------------------------------------------------------------
                 CE_IDLE: begin
-                    ce_idx <= 0;
+                    ce_idx        <= 0;
+                    ce_apply_sent <= 1'b0;
 
                     if (p0_burst_ready || p1_burst_ready) begin
                         logic grant_p0, grant_p1;
@@ -1188,9 +1237,6 @@ module axi_mm_dual_port_bram #(
                     end
                 end
 
-                // ------------------------------------------------------------
-                // APPLY burst to mem_word[] atomically (single dma_clk edge)
-                // ------------------------------------------------------------
                 CE_APPLY_P0: begin
                     int unsigned i;
                     int unsigned j;
@@ -1198,13 +1244,11 @@ module axi_mm_dual_port_bram #(
                     logic [DATA_WIDTH-1:0] cur;
                     int unsigned wr_bytes;
 
-                    // build unique-word update list for this burst
                     ce_uniq_cnt = 0;
 
                     for (i = 0; i < ce_total; i++) begin
                         wi = word_index(p0_buf[i].byte_addr);
 
-                        // find existing entry
                         ce_found = 1'b0;
                         ce_find_j = 0;
                         for (j = 0; j < ce_uniq_cnt; j++) begin
@@ -1238,15 +1282,15 @@ module axi_mm_dual_port_bram #(
                         perf_bytes_written <= perf_bytes_written + wr_bytes;
                     end
 
-                    // commit all updated words atomically at burst end
                     for (j = 0; j < ce_uniq_cnt; j++) begin
                         mem_word[ce_upd_wi[j]] <= ce_upd_word[j];
                     end
 
                     perf_busy_cycles <= perf_busy_cycles + 1;
 
-                    ce_idx   <= 0;
-                    ce_state <= CE_EMIT_P0;
+                    ce_idx        <= 0;
+                    ce_apply_sent <= 1'b0;
+                    ce_state      <= CE_EMIT_P0;
                 end
 
                 CE_APPLY_P1: begin
@@ -1300,15 +1344,35 @@ module axi_mm_dual_port_bram #(
 
                     perf_busy_cycles <= perf_busy_cycles + 1;
 
-                    ce_idx   <= 0;
-                    ce_state <= CE_EMIT_P1;
+                    ce_idx        <= 0;
+                    ce_apply_sent <= 1'b0;
+                    ce_state      <= CE_EMIT_P1;
                 end
 
-                // ------------------------------------------------------------
-                // EMIT commit beats (handshaked), AFTER mem is updated
-                // ------------------------------------------------------------
                 CE_EMIT_P0: begin
-                    if (ce_idx < ce_total) begin
+                    // Phase 1: emit APPLY beats (visibility already established in CE_APPLY_P0)
+                    if (!ce_apply_sent) begin
+                        if (ce_idx < ce_total) begin
+                            if (apply_if.cb_producer.ready) begin
+                                apply_if.cb_producer.valid     <= 1'b1;
+                                apply_if.cb_producer.port      <= 1'b0;
+                                apply_if.cb_producer.id        <= ce_bid;
+                                apply_if.cb_producer.beat_idx  <= ce_idx[7:0];
+                                apply_if.cb_producer.byte_addr <= p0_buf[ce_idx].byte_addr;
+                                apply_if.cb_producer.wdata     <= p0_buf[ce_idx].wdata;
+                                apply_if.cb_producer.wstrb     <= p0_buf[ce_idx].wstrb;
+                                apply_if.cb_producer.size      <= p0_buf[ce_idx].size;
+                                apply_if.cb_producer.last      <= (ce_idx == (ce_total-1));
+
+                                ce_idx <= ce_idx + 1;
+                            end
+                        end else begin
+                            ce_idx        <= 0;
+                            ce_apply_sent <= 1'b1;
+                        end
+                    end
+                    // Phase 2: emit COMMIT beats
+                    else if (ce_idx < ce_total) begin
                         if (commit_if.cb_producer.ready) begin
                             commit_if.cb_producer.valid     <= 1'b1;
                             commit_if.cb_producer.port      <= 1'b0;
@@ -1323,7 +1387,6 @@ module axi_mm_dual_port_bram #(
                             ce_idx <= ce_idx + 1;
                         end
                     end else begin
-                        // push B only after emit completed
                         if (!p0_b_full) begin
                             p0_b_fifo[p0_b_wptr].bid   <= ce_bid;
                             p0_b_fifo[p0_b_wptr].bresp <= 2'b00;
@@ -1334,6 +1397,8 @@ module axi_mm_dual_port_bram #(
                         p0_burst_ready       <= 1'b0;
                         p0_buf_beats_written <= 0;
                         p0_buf_beats_total   <= 0;
+                        ce_apply_sent        <= 1'b0;
+                        ce_idx               <= 0;
 
                         perf_p0_bursts <= perf_p0_bursts + 1;
                         ce_state <= CE_IDLE;
@@ -1341,7 +1406,29 @@ module axi_mm_dual_port_bram #(
                 end
 
                 CE_EMIT_P1: begin
-                    if (ce_idx < ce_total) begin
+                    // Phase 1: emit APPLY beats (visibility already established in CE_APPLY_P1)
+                    if (!ce_apply_sent) begin
+                        if (ce_idx < ce_total) begin
+                            if (apply_if.cb_producer.ready) begin
+                                apply_if.cb_producer.valid     <= 1'b1;
+                                apply_if.cb_producer.port      <= 1'b1;
+                                apply_if.cb_producer.id        <= ce_bid;
+                                apply_if.cb_producer.beat_idx  <= ce_idx[7:0];
+                                apply_if.cb_producer.byte_addr <= p1_buf[ce_idx].byte_addr;
+                                apply_if.cb_producer.wdata     <= p1_buf[ce_idx].wdata;
+                                apply_if.cb_producer.wstrb     <= p1_buf[ce_idx].wstrb;
+                                apply_if.cb_producer.size      <= p1_buf[ce_idx].size;
+                                apply_if.cb_producer.last      <= (ce_idx == (ce_total-1));
+
+                                ce_idx <= ce_idx + 1;
+                            end
+                        end else begin
+                            ce_idx        <= 0;
+                            ce_apply_sent <= 1'b1;
+                        end
+                    end
+                    // Phase 2: emit COMMIT beats
+                    else if (ce_idx < ce_total) begin
                         if (commit_if.cb_producer.ready) begin
                             commit_if.cb_producer.valid     <= 1'b1;
                             commit_if.cb_producer.port      <= 1'b1;
@@ -1356,15 +1443,15 @@ module axi_mm_dual_port_bram #(
                             ce_idx <= ce_idx + 1;
                         end
                     end else begin
-                        // P1 deferred last-beat ACK after commit+emit completed
                         if (p1_lastbeat_ack_deferred) begin
                             p1_ack_toggle_dma <= ~p1_ack_toggle_dma;
                             p1_lastbeat_ack_deferred <= 1'b0;
                         end
 
-                        // B on core side is generated by ACK toggle logic (unchanged)
                         p1_burst_ready       <= 1'b0;
                         p1_buf_beats_written <= 0;
+                        ce_apply_sent        <= 1'b0;
+                        ce_idx               <= 0;
 
                         perf_p1_bursts <= perf_p1_bursts + 1;
                         ce_state <= CE_IDLE;

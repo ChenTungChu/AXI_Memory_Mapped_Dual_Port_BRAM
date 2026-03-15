@@ -8,6 +8,13 @@ class axi_mm_cov_subscriber #(
 
   localparam int BYTES_PER_BEAT = (DATA_WIDTH/8);
 
+  // ------------------------------------------------------------
+  // Minimal instrumentation (debug counters)
+  // ------------------------------------------------------------
+  longint unsigned seen_total;
+  longint unsigned seen_full;
+  longint unsigned dropped_nonfull;
+
   // shadow vars
   axi_rw_e                   rw;
   logic [1:0]                burst;
@@ -25,7 +32,8 @@ class axi_mm_cov_subscriber #(
     logic [BYTES_PER_BEAT-1:0] tmp;
     tmp = '0;
     // 只填低 8 bits（如果 lanes>8，你可以決定要不要擴展成 repeat pattern）
-    tmp[ (BYTES_PER_BEAT<8) ? (BYTES_PER_BEAT-1) : 7 : 0 ] = v[ (BYTES_PER_BEAT<8) ? (BYTES_PER_BEAT-1) : 7 : 0 ];
+    tmp[ (BYTES_PER_BEAT<8) ? (BYTES_PER_BEAT-1) : 7 : 0 ] =
+      v  [ (BYTES_PER_BEAT<8) ? (BYTES_PER_BEAT-1) : 7 : 0 ];
     return tmp;
   endfunction
 
@@ -94,23 +102,53 @@ class axi_mm_cov_subscriber #(
   function new(string name="axi_mm_cov_subscriber", uvm_component parent=null);
     super.new(name, parent);
     cg = new();
+    seen_total      = 0;
+    seen_full       = 0;
+    dropped_nonfull = 0;
   endfunction
 
-virtual function void write(axi_mm_seq_item#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH) t);
+  virtual function void write(axi_mm_seq_item#(ADDR_WIDTH,DATA_WIDTH,ID_WIDTH) t);
+    // Debug: confirm we actually receive transactions
+    seen_total++;
 
-  // 只統計完整 transaction（READ: AR+R；WRITE: AW+W+B）
-  if (t.op_kind != OP_FULL) return;
+    // 只統計完整 transaction（READ: AR+R；WRITE: AW+W+B）
+    if (t.op_kind != OP_FULL) begin
+      dropped_nonfull++;
+      return;
+    end
 
-  rw    = t.rw;
-  burst = t.burst;
-  size  = t.size;
-  len   = t.len;
-  id    = t.id;
+    seen_full++;
 
-  if (rw == AXI_WRITE && t.wstrb_beats.size() > 0) wstrb0 = t.wstrb_beats[0];
-  else wstrb0 = '0;
+    rw    = t.rw;
+    burst = t.burst;
+    size  = t.size;
+    len   = t.len;
+    id    = t.id;
 
-  cg.sample();
-endfunction
+    if (rw == AXI_WRITE && t.wstrb_beats.size() > 0) wstrb0 = t.wstrb_beats[0];
+    else wstrb0 = '0;
+
+    cg.sample();
+  endfunction
+
+  // Print a concise summary at end of simulation
+  virtual function void report_phase(uvm_phase phase);
+    super.report_phase(phase);
+
+    `uvm_info("COV_SUB",
+      $sformatf("[%s] seen_total=%0d, seen_full(OP_FULL)=%0d, dropped_nonfull=%0d",
+                get_full_name(), seen_total, seen_full, dropped_nonfull),
+      UVM_LOW)
+
+    if (seen_total == 0) begin
+      `uvm_warning("COV_SUB",
+        $sformatf("[%s] No transactions received. Check env connections: monitor.ap -> cov_sub.analysis_export",
+                  get_full_name()))
+    end else if (seen_full == 0) begin
+      `uvm_warning("COV_SUB",
+        $sformatf("[%s] Transactions received but none were OP_FULL. Coverage sampling is gated off by op_kind. (monitor may not emit OP_FULL items.)",
+                  get_full_name()))
+    end
+  endfunction
 
 endclass

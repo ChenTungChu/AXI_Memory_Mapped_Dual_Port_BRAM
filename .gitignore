@@ -1,7 +1,3 @@
-# =========================
-# QuestaSim / ModelSim
-# =========================
-
 # Work library
 work/
 work_*/
@@ -16,13 +12,13 @@ uvm12/
 wlft*
 *.vcd
 
-# Transcript / logs
+# Transcript/logs
 transcript
 logs/
 *.log
 *.xml
 
-# Temporary / backup files
+# Temporary/backup files
 *.bak
 *.tmp
 *.swp
@@ -34,20 +30,13 @@ logs/
 compile_local.tcl
 compile_old.tcl
 run_old.tcl
+uvm_encountered_issues.md
 
 # Windows junk
 Thumbs.db
 Desktop.ini
 
-# =========================
-# Optional: editor / IDE
-# =========================
+# IDE
 .vscode/
 .idea/
 
-# =========================
-# Optional: Python / venv
-# =========================
-__pycache__/
-*.pyc
-venv/

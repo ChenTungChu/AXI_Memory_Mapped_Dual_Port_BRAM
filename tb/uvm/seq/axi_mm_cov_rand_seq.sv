@@ -112,15 +112,26 @@ class axi_mm_cov_rand_seq #(
   endfunction
 
   function automatic int unsigned pick_len_beats();
+    int unsigned sum;
     int unsigned r;
-    r = $urandom_range(1, 100);
+
+    // Allow pct sum != 100 (robust against partial knob overrides in tests)
+    sum = pct_len_1 + pct_len_short + pct_len_mid + pct_len_long + pct_len_max;
+    if (sum == 0) return 1;
+
+    r = $urandom_range(1, sum);
+
     if (r <= pct_len_1) return 1;
     r -= pct_len_1;
+
     if (r <= pct_len_short) return $urandom_range(2,4);
     r -= pct_len_short;
+
     if (r <= pct_len_mid) return $urandom_range(5,16);
     r -= pct_len_mid;
+
     if (r <= pct_len_long) return $urandom_range(17,64);
+
     return 256;
   endfunction
 
@@ -240,34 +251,30 @@ class axi_mm_cov_rand_seq #(
     input logic [1:0] burst_sel,
     input logic [ID_WIDTH-1:0] id_sel
   );
-    bit ok;
-    int unsigned i;
     logic [7:0] len8;
     logic [2:0] size3;
-    logic [1:0] burst2;
 
-    len8   = logic'(beats-1);
-    size3  = logic'($clog2(size_bytes));
-    burst2 = burst_sel;
+    // beats -> AXI LEN (0-based)
+    if (beats == 0) return 0;
+    len8  = beats - 1;
+    size3 = $clog2(size_bytes);
 
-    ok = 0;
-    for (i = 0; i < rand_retry; i++) begin
-      if (tr.randomize() with {
-            rw      == rw_sel;
-            op_kind == op_sel;
+    // Directly assign fields (avoid solver issues with rand dynamic arrays)
+    tr.rw      = rw_sel;
+    tr.op_kind = op_sel;
+    tr.addr    = addr_sel;
+    tr.id      = id_sel;
+    tr.len     = len8;
+    tr.size    = size3;
+    tr.burst   = burst_sel;
 
-            addr    == addr_sel;
-            id      == id_sel;
-
-            len     == len8;
-            size    == size3;
-            burst   == burst2;
-          }) begin
-        ok = 1;
-        break;
-      end
+    // Make the monitor-side model consistent: these are FULL/W_ONLY streaming cases
+    // Allocate payload arrays deterministically when we will drive W beats.
+    if ((rw_sel == AXI_WRITE) && (op_sel inside {OP_FULL, OP_W_ONLY})) begin
+      tr.set_beats_len(tr.len); // len is 0-based; set_beats_len expects 0-based
     end
-    return ok;
+
+    return 1;
   endfunction
 
   // -----------------------
@@ -279,6 +286,13 @@ class axi_mm_cov_rand_seq #(
     axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr3;
 
     if (n_tr == 0) return;
+
+    `uvm_info("COV_SEQ_CFG",
+      $sformatf("CFG: n_tr=%0d BYTES_PER_BEAT=%0d | size_pct(1/2/4/8)=%0d/%0d/%0d/%0d | len_pct(1/short/mid/long/max)=%0d/%0d/%0d/%0d/%0d",
+                n_tr, BYTES_PER_BEAT,
+                pct_size_1, pct_size_2, pct_size_4, pct_size_8,
+                pct_len_1, pct_len_short, pct_len_mid, pct_len_long, pct_len_max),
+      UVM_LOW)
 
     repeat (n_tr) begin
       bit is_write;

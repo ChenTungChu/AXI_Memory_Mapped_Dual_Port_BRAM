@@ -23,6 +23,8 @@ package axi_mm_pkg;
   //------------------------------------------------------------
   `include "../commit/axi_mm_commit_item.sv"
   `include "../commit/axi_mm_commit_monitor.sv"
+  `include "../commit/axi_mm_apply_item.sv"
+  `include "../commit/axi_mm_apply_monitor.sv"
 
   //------------------------------------------------------------
   // Sequencer
