@@ -13,7 +13,6 @@ class axi_mm_smoke_test extends uvm_test;
   localparam int DATA_WIDTH = 64;
   localparam int ID_WIDTH   = 4;
 
-  // NOTE: use type-parameter syntax with NO space before '#'
   axi_mm_env#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
   function new(string name = "axi_mm_smoke_test", uvm_component parent = null);
@@ -35,18 +34,14 @@ class axi_mm_smoke_test extends uvm_test;
     seq0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seq0");
     seq1 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("seq1");
 
-    // -----------------------------
-    // Keep it SMALL but force contention
-    // -----------------------------
-
     // P0
-    seq0.num_transactions = 16;
-    seq0.max_beats        = 8;
-    seq0.read_percent     = 20; // bias write: exercise write arb + B path harder
+    seq0.num_transactions     = 16;
+    seq0.max_beats            = 8;
+    seq0.read_percent         = 20; 
 
     seq0.restrict_addr_window = 1'b1;
     seq0.window_base          = 32'h0000_0000;
-    seq0.window_bytes         = 64;          // tiny hot window -> guaranteed conflicts
+    seq0.window_bytes         = 64;         
     seq0.enable_locality      = 1'b1;
     seq0.locality_prob        = 80;
 
@@ -61,7 +56,7 @@ class axi_mm_smoke_test extends uvm_test;
     seq1.enable_locality      = 1'b1;
     seq1.locality_prob        = 80;
 
-    // Optional: keep burst simple for smoke
+    // Simple burst
     seq0.enable_wrap          = 1'b0;
     seq0.enable_fixed         = 1'b0;
     seq0.enable_size_rand     = 1'b0;

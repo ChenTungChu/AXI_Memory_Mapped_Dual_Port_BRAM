@@ -165,7 +165,7 @@ module axi_mm_top;
         // --------------------------------------------------------
         // Run test
         // --------------------------------------------------------
-        run_test("axi_mm_coverage_test");
+        run_test("axi_mm_directed_test");
     end
 
 endmodule

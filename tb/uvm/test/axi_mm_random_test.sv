@@ -7,15 +7,7 @@ import uvm_pkg::*;
 import axi_mm_pkg::*;
 
 // ------------------------------------------------------------
-// AXI-MM Random Stress Test (dual-port)  [REGRESSION GATE v1]
-// PASS criteria: scoreboard mismatches==0 (SCB report_phase)
-// Adds:
-//   - +PROFILE=BP_LOW|OOO_HIGH|MIX_CHAOS|SOAK_LONG
-//   - +GATE=1  (run all 4 profiles sequentially in one sim)
-//   - watchdog timeout (default per profile, override by +GATE_TIMEOUT_NS=<ns>)
-// Keeps legacy:
-//   - +CASE=10 / +CASELIST=...
-//   - default legacy behavior: run "10" only if no args
+// Random Test
 // ------------------------------------------------------------
 class axi_mm_random_test extends uvm_test;
 
@@ -26,17 +18,24 @@ class axi_mm_random_test extends uvm_test;
   localparam int DATA_WIDTH = 64;
   localparam int ID_WIDTH   = 4;
 
-  // BRAM info (given by you)
+  // BRAM configuration
   localparam int unsigned DEPTH_WORDS    = 1024;
   localparam int unsigned BYTES_PER_BEAT = (DATA_WIDTH/8);
   localparam int unsigned MEM_BYTES      = DEPTH_WORDS * BYTES_PER_BEAT; // 8192
 
+  // Environment handle
   axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
+  // ------------------------------------------------------------
+  // Constructor
+  // ------------------------------------------------------------
   function new(string name = "axi_mm_random_test", uvm_component parent = null);
     super.new(name, parent);
   endfunction
 
+  // ------------------------------------------------------------
+  // Build phase
+  // ------------------------------------------------------------
   virtual function void build_phase(uvm_phase phase);
     super.build_phase(phase);
     env_h = axi_mm_env#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("env_h", this);
@@ -77,9 +76,9 @@ class axi_mm_random_test extends uvm_test;
     return -1;
   endfunction
 
-  // ------------------------------------------------------------
-  // Legacy +CASE / +CASELIST selection
-  // ------------------------------------------------------------
+  // Case selection
+  localparam string DEFAULT_CASE = "1";  
+
   function automatic bit case_enabled(string tag);
     string one, list;
     one  = get_plusarg_str("CASE");
@@ -91,19 +90,23 @@ class axi_mm_random_test extends uvm_test;
     // Single selection
     if (one != "") return (one == tag);
 
-    // List selection (comma separated)
+    // List selection
     if (list != "") begin
       string tmp;
       tmp = {",", list, ","};
       return (str_find(tmp, {",", tag, ","}) != -1);
     end
 
-    // Default behavior if user didn't pass args:
-    return (tag == "10");
+    // Default
+    return (tag == DEFAULT_CASE);
   endfunction
 
+  task automatic banner_case(string cid, string title);
+    `uvm_info("RANDOM_TEST", $sformatf("========== RUN CASE %s : %s ==========", cid, title), UVM_MEDIUM)
+  endtask
+
   // ------------------------------------------------------------
-  // Configure BOTH drivers with same stress knobs
+  // Helper task: Configure both drivers with same stress knobs
   // ------------------------------------------------------------
   task automatic cfg_driver_stress(
       input bit          stress_enable,
@@ -150,7 +153,7 @@ class axi_mm_random_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Baseline READY policy on both drivers
+  // Helper task: Baseline READY policy on both drivers
   // ------------------------------------------------------------
   task automatic cfg_driver_hold_ready(
       input bit hold_bready_high,
@@ -164,7 +167,7 @@ class axi_mm_random_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Run one dual-port random case (UNCHANGED core)
+  // Helper task: Run one dual-port random case
   // ------------------------------------------------------------
   task automatic run_case_dual_port(
     input string                 case_name,
@@ -193,14 +196,14 @@ class axi_mm_random_test extends uvm_test;
     input bit                    enable_wrap,
 
     // WRAP behavior knobs
-    input int unsigned           wrap_prob,        // 0 - 100
+    input int unsigned           wrap_prob,        // 0-100
 
     // PARTIAL behavior knobs
-    input int unsigned           partial_prob,     // 0 - 100
+    input int unsigned           partial_prob,     // 0-100
 
     // locality knobs
     input bit                    enable_locality,
-    input int unsigned           locality_prob     // 0 - 100
+    input int unsigned           locality_prob     // 0-100
   );
     axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) seq0;
     axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) seq1;
@@ -213,23 +216,12 @@ class axi_mm_random_test extends uvm_test;
     pp = (partial_prob  > 100) ? 100 : partial_prob;
     lp = (locality_prob > 100) ? 100 : locality_prob;
 
-    `uvm_info("RANDOM_TEST",
-      $sformatf(
-        "=== %s: start | tx p0/p1=%0d/%0d max_beats p0/p1=%0d/%0d read%% p0/p1=%0d/%0d aligned p0/p1=%0d/%0d window=%0d (p0:0x%0h+%0d p1:0x%0h+%0d) size_rand=%0d partial_en=%0d fixed=%0d wrap=%0d wrap_prob=%0d partial_prob=%0d locality_en=%0d locality_prob=%0d ===",
-        case_name,
-        num_tx_p0, num_tx_p1,
-        max_beats_p0, max_beats_p1,
-        read_percent_p0, read_percent_p1,
-        addr_aligned_p0, addr_aligned_p1,
-        window_en, win_base_p0, win_bytes_p0, win_base_p1, win_bytes_p1,
-        enable_size_rand, enable_partial_wstrb, enable_fixed, enable_wrap, wp, pp,
-        enable_locality, lp),
-      UVM_MEDIUM)
+    `uvm_info("RANDOM_TEST", $sformatf("=== %s: start | tx p0/p1=%0d/%0d max_beats p0/p1=%0d/%0d read%% p0/p1=%0d/%0d aligned p0/p1=%0d/%0d window=%0d (p0:0x%0h+%0d p1:0x%0h+%0d) size_rand=%0d partial_en=%0d fixed=%0d wrap=%0d wrap_prob=%0d partial_prob=%0d locality_en=%0d locality_prob=%0d ===", case_name, num_tx_p0, num_tx_p1, max_beats_p0, max_beats_p1, read_percent_p0, read_percent_p1, addr_aligned_p0, addr_aligned_p1, window_en, win_base_p0, win_base_p1, win_bytes_p0, win_bytes_p1, enable_size_rand, enable_partial_wstrb, enable_fixed, enable_wrap, wp, pp, enable_locality, lp), UVM_MEDIUM)
 
     seq0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create({case_name, "_seq0"});
     seq1 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create({case_name, "_seq1"});
 
-    // Lock knobs from test
+    // Lock knobs from test (seq0)
     seq0.num_transactions.rand_mode(0);
     seq0.max_beats.rand_mode(0);
     seq0.read_percent.rand_mode(0);
@@ -252,7 +244,7 @@ class axi_mm_random_test extends uvm_test;
     seq0.restrict_to_mem.rand_mode(0);
     seq0.mem_bytes.rand_mode(0);
 
-    // same for seq1
+    // Lock knobs from test (seq1)
     seq1.num_transactions.rand_mode(0);
     seq1.max_beats.rand_mode(0);
     seq1.read_percent.rand_mode(0);
@@ -288,7 +280,7 @@ class axi_mm_random_test extends uvm_test;
     seq1.read_percent     = read_percent_p1;
     seq1.addr_aligned     = addr_aligned_p1;
 
-    // ALWAYS clamp into BRAM range
+    // Always clamp into BRAM range
     seq0.restrict_to_mem = 1;
     seq1.restrict_to_mem = 1;
     seq0.mem_bytes       = MEM_BYTES;
@@ -326,25 +318,11 @@ class axi_mm_random_test extends uvm_test;
     seq0.locality_prob        = lp;
     seq1.locality_prob        = lp;
 
-    `uvm_info("RANDOM_TEST",
-      $sformatf("%s SEQ0: win_en=%0d base=0x%0h bytes=%0d mem_en=%0d mem_bytes=%0d wrap_en=%0d wrap_prob=%0d partial_en=%0d partial_prob=%0d loc=%0d/%0d",
-        case_name,
-        seq0.restrict_addr_window, seq0.window_base, seq0.window_bytes,
-        seq0.restrict_to_mem, seq0.mem_bytes,
-        seq0.enable_wrap, seq0.wrap_prob,
-        seq0.enable_partial_wstrb, seq0.partial_prob,
-        seq0.enable_locality, seq0.locality_prob),
-      UVM_MEDIUM)
+    // seq0
+    `uvm_info("RANDOM_TEST", $sformatf("%s SEQ0: win_en=%0d base=0x%0h bytes=%0d mem_en=%0d mem_bytes=%0d wrap_en=%0d wrap_prob=%0d partial_en=%0d partial_prob=%0d loc=%0d/%0d", case_name, seq0.restrict_addr_window, seq0.window_base, seq0.window_bytes, seq0.restrict_to_mem, seq0.mem_bytes, seq0.enable_wrap, seq0.wrap_prob, seq0.enable_partial_wstrb, seq0.partial_prob, seq0.enable_locality, seq0.locality_prob), UVM_MEDIUM)
 
-    `uvm_info("RANDOM_TEST",
-      $sformatf("%s SEQ1: win_en=%0d base=0x%0h bytes=%0d mem_en=%0d mem_bytes=%0d wrap_en=%0d wrap_prob=%0d partial_en=%0d partial_prob=%0d loc=%0d/%0d",
-        case_name,
-        seq1.restrict_addr_window, seq1.window_base, seq1.window_bytes,
-        seq1.restrict_to_mem, seq1.mem_bytes,
-        seq1.enable_wrap, seq1.wrap_prob,
-        seq1.enable_partial_wstrb, seq1.partial_prob,
-        seq1.enable_locality, seq1.locality_prob),
-      UVM_MEDIUM)
+    // seq1
+    `uvm_info("RANDOM_TEST", $sformatf("%s SEQ1: win_en=%0d base=0x%0h bytes=%0d mem_en=%0d mem_bytes=%0d wrap_en=%0d wrap_prob=%0d partial_en=%0d partial_prob=%0d loc=%0d/%0d", case_name, seq1.restrict_addr_window, seq1.window_base, seq1.window_bytes, seq1.restrict_to_mem, seq1.mem_bytes, seq1.enable_wrap, seq1.wrap_prob, seq1.enable_partial_wstrb, seq1.partial_prob, seq1.enable_locality, seq1.locality_prob), UVM_MEDIUM)
 
     fork
       begin
@@ -362,13 +340,13 @@ class axi_mm_random_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Watchdog wrapper: run a case with timeout protection
+  // Helper task: Watchdog wrapper
   // ------------------------------------------------------------
   task automatic run_case_with_watchdog(
     input string case_name,
     input time   timeout_ns,
 
-    // pass-through args to run_case_dual_port
+    // Pass-through args to run_case_dual_port
     input int unsigned           num_tx_p0,
     input int unsigned           num_tx_p1,
     input int unsigned           max_beats_p0,
@@ -398,25 +376,14 @@ class axi_mm_random_test extends uvm_test;
 
     fork
       begin : RUN_MAIN
-        run_case_dual_port(case_name,
-          num_tx_p0, num_tx_p1,
-          max_beats_p0, max_beats_p1,
-          read_percent_p0, read_percent_p1,
-          addr_aligned_p0, addr_aligned_p1,
-          window_en, win_base_p0, win_base_p1, win_bytes_p0, win_bytes_p1,
-          enable_size_rand, enable_partial_wstrb, enable_fixed, enable_wrap,
-          wrap_prob, partial_prob,
-          enable_locality, locality_prob
-        );
+        run_case_dual_port(case_name, num_tx_p0, num_tx_p1, max_beats_p0, max_beats_p1, read_percent_p0, read_percent_p1, addr_aligned_p0, addr_aligned_p1, window_en, win_base_p0, win_base_p1, win_bytes_p0, win_bytes_p1, enable_size_rand, enable_partial_wstrb, enable_fixed, enable_wrap,wrap_prob, partial_prob, enable_locality, locality_prob);
         done = 1;
       end
 
       begin : RUN_WD
         #(timeout_ns * 1ns);
         if (!done) begin
-          `uvm_fatal("TIMEOUT",
-            $sformatf("Watchdog timeout hit in %s after %0t ns. (Use +GATE_TIMEOUT_NS=<ns> to override)",
-              case_name, timeout_ns))
+          `uvm_fatal("TIMEOUT", $sformatf("Watchdog timeout hit in %s after %0t ns.", case_name, timeout_ns))
         end
       end
     join_any
@@ -425,44 +392,43 @@ class axi_mm_random_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Gate profile runner (Regression Gate v1)
+  // Helper task: Gate profile runner
   // ------------------------------------------------------------
   task automatic run_gate_profile(
-    input string profile_name,
-    input int unsigned base_seed,
+    input string                 profile_name,
+    input int unsigned           base_seed,
     input logic [ADDR_WIDTH-1:0] WIN0_BASE,
     input logic [ADDR_WIDTH-1:0] WIN1_BASE,
-    input int unsigned WIN_BYTES,
-    input time timeout_ns_override
+    input int unsigned           WIN_BYTES,
+    input time                   timeout_ns_override
   );
     time tmo_ns;
 
-    // default timeout per profile (can be overridden)
+    // Default timeout
     if (timeout_ns_override != 0) begin
       tmo_ns = timeout_ns_override;
     end else begin
-      if (profile_name == "SOAK_LONG")      tmo_ns = 400_000_000; // 400ms (ns units)
-      else                                 tmo_ns = 120_000_000; // 120ms
+      if (profile_name == "SOAK_LONG")      tmo_ns = 400_000_000; // 400ms
+      else                                  tmo_ns = 120_000_000; // 120ms
     end
 
     `uvm_info("RANDOM_GATE",
       $sformatf("=== RANDOM GATE v1 profile=%s timeout_ns=%0t ===", profile_name, tmo_ns),
       UVM_MEDIUM)
 
-    // -------- Profile definitions (fixed knobs) --------
+    // Profile definitions
     if (profile_name == "BP_LOW") begin
-      // Heavy backpressure, partial+wrap+locality ON (your proven case10-like)
       cfg_driver_hold_ready(0, 0);
       cfg_driver_stress(
         1,
         base_seed ^ 32'hBFE0_0001,
-        10,  // bready_prob
-        10,  // rready_prob
-        6,   // aw_pre_delay_max
-        6,   // ar_pre_delay_max
-        1,   // w_streaming_mode
-        4,   // w_beat_gap_max
-        256  // force_ready_after
+        10,
+        10,
+        6,
+        6,
+        1,
+        4,
+        256
       );
 
       run_case_with_watchdog("GATE_BP_LOW",
@@ -480,18 +446,17 @@ class axi_mm_random_test extends uvm_test;
       );
     end
     else if (profile_name == "OOO_HIGH") begin
-      // High throughput, moderate ready, enable size_rand+wrap to create variety
       cfg_driver_hold_ready(0, 0);
       cfg_driver_stress(
         1,
         base_seed ^ 32'h0FF0_0002,
-        70,  // bready_prob
-        70,  // rready_prob
-        2,   // aw_pre_delay_max
-        2,   // ar_pre_delay_max
-        1,   // w_streaming_mode
-        2,   // w_beat_gap_max
-        128  // force_ready_after
+        70,
+        70,
+        2,
+        2,
+        1,
+        2,
+        128
       );
 
       run_case_with_watchdog("GATE_OOO_HIGH",
@@ -509,18 +474,17 @@ class axi_mm_random_test extends uvm_test;
       );
     end
     else if (profile_name == "MIX_CHAOS") begin
-      // Mixed chaos: size_rand + partial + fixed + wrap + locality
       cfg_driver_hold_ready(0, 0);
       cfg_driver_stress(
         1,
         base_seed ^ 32'hC4A0_0003,
-        40,  // bready_prob
-        40,  // rready_prob
-        12,  // aw_pre_delay_max
-        12,  // ar_pre_delay_max
-        1,   // w_streaming_mode
-        6,   // w_beat_gap_max
-        256  // force_ready_after
+        40,
+        40,
+        12,
+        12,
+        1,
+        6,
+        256
       );
 
       run_case_with_watchdog("GATE_MIX_CHAOS",
@@ -538,18 +502,17 @@ class axi_mm_random_test extends uvm_test;
       );
     end
     else if (profile_name == "SOAK_LONG") begin
-      // Long soak: huge ops + heavy BP, keep features on to hit rare combos
       cfg_driver_hold_ready(0, 0);
       cfg_driver_stress(
         1,
         base_seed ^ 32'h504B_0004,
-        10,  // bready_prob
-        10,  // rready_prob
-        6,   // aw_pre_delay_max
-        6,   // ar_pre_delay_max
-        1,   // w_streaming_mode
-        4,   // w_beat_gap_max
-        256  // force_ready_after
+        10,
+        10,
+        6,
+        6,
+        1,
+        4,
+        256
       );
 
       run_case_with_watchdog("GATE_SOAK_LONG",
@@ -567,13 +530,380 @@ class axi_mm_random_test extends uvm_test;
       );
     end
     else begin
-      `uvm_fatal("BAD_PROFILE",
-        $sformatf("Unknown +PROFILE=%s. Allowed: BP_LOW|OOO_HIGH|MIX_CHAOS|SOAK_LONG (or use +GATE=1)", profile_name))
+      `uvm_fatal("BAD_PROFILE", $sformatf("Unknown +PROFILE=%s. Allowed: BP_LOW | OOO_HIGH | MIX_CHAOS | SOAK_LONG", profile_name))
     end
 
-    `uvm_info("RANDOM_GATE",
-      $sformatf("=== RANDOM GATE v1 profile=%s DONE ===", profile_name),
-      UVM_MEDIUM)
+    `uvm_info("RANDOM_GATE", $sformatf("=== RANDOM GATE profile=%s DONE ===", profile_name), UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 1: Baseline split
+  // ------------------------------------------------------------
+  task automatic run_case_1_baseline_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("1", "Baseline split");
+
+    cfg_driver_hold_ready(1, 1);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0002,
+      100, 100,
+      0,   0,
+      0,   0,
+      64
+    );
+
+    run_case_dual_port("CASE_1_BASELINE_SPLIT",
+      2000, 2000,
+      8,    8,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_1] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 2: W stream gaps split
+  // ------------------------------------------------------------
+  task automatic run_case_2_w_stream_gaps_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("2", "W stream gaps split");
+
+    cfg_driver_hold_ready(1, 1);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0002,
+      100, 100,
+      0,   0,
+      1,   2,
+      64
+    );
+
+    run_case_dual_port("CASE_2_W_STREAM_GAPS_SPLIT",
+      3000, 3000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_2] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 3: Backpressure split
+  // ------------------------------------------------------------
+  task automatic run_case_3_backpressure_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("3", "Backpressure split");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0003,
+      50, 50,
+      0,  0,
+      1,  2,
+      64
+    );
+
+    run_case_dual_port("CASE_3_BACKPRESSURE_SPLIT",
+      3000, 3000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_3] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 4: Heavy backpressure split
+  // ------------------------------------------------------------
+  task automatic run_case_4_heavy_backpressure_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("4", "Heavy backpressure split");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0004,
+      40, 40,
+      0,  0,
+      1,  1,
+      128
+    );
+
+    run_case_dual_port("CASE_4_BACKPRESSURE_SPLIT",
+      6000, 6000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_4] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 5: Timing jitter split
+  // ------------------------------------------------------------
+  task automatic run_case_5_timing_jitter_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("5", "Timing jitter split");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0005,
+      70, 70,
+      25, 25,
+      1,  8,
+      128
+    );
+
+    run_case_dual_port("CASE_5_TIMING_JITTER_SPLIT",
+      8000, 8000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_5] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 6: Soak split
+  // ------------------------------------------------------------
+  task automatic run_case_6_soak_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("6", "Soak split");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0006,
+      85, 85,
+      5,  5,
+      1,  2,
+      128
+    );
+
+    run_case_dual_port("CASE_6_SOAK_SPLIT",
+      20000, 20000,
+      16,    16,
+      50,    50,
+      1,     1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      1, 1, 0, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_6] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 7: Fixed split
+  // ------------------------------------------------------------
+  task automatic run_case_7_fixed_split(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("7", "Fixed split");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_0007,
+      80, 80,
+      5,  5,
+      1,  2,
+      128
+    );
+
+    run_case_dual_port("CASE_7_FIXED_SPLIT",
+      12000, 12000,
+      16,    16,
+      50,    50,
+      1,     1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 0, 1, 0,
+      0,
+      0,
+      0,
+      0
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_7] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 8: Wrap split mix stress
+  // ------------------------------------------------------------
+  task automatic run_case_8_wrap_split_mix_stress(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("8", "Wrap split mix stress");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_5454,
+      60, 60,
+      6,  6,
+      1,  4,
+      256
+    );
+
+    run_case_dual_port("CASE_8_WRAP_SPLIT_MIX_STRESS",
+      8000, 8000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 0, 0, 1,
+      30,
+      0,
+      1,
+      50
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_8] Done", UVM_MEDIUM)
+  endtask
+  
+  // ------------------------------------------------------------
+  // Case 9: Size rand split mix
+  // ------------------------------------------------------------
+  task automatic run_case_9_size_rand_split_mix(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("9", "Size rand split mix");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h0000_BEEF,
+      65, 65,
+      4,  4,
+      1,  2,
+      192
+    );
+
+    run_case_dual_port("CASE_9_SIZE_RAND_SPLIT_MIX",
+      8000, 8000,
+      16,   16,
+      50,   50,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      1, 0, 0, 1,
+      35,
+      0,
+      1,
+      55
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_9] Done", UVM_MEDIUM)
+  endtask
+
+  // ------------------------------------------------------------
+  // Case 10: Partial WSTRB split stress
+  // ------------------------------------------------------------
+  task automatic run_case_10_partial_wstrb_split_stress(
+    input int unsigned           base_seed,
+    input logic [ADDR_WIDTH-1:0] WIN0_BASE,
+    input logic [ADDR_WIDTH-1:0] WIN1_BASE,
+    input int unsigned           WIN_BYTES
+  );
+    banner_case("10", "Partial WSTRB split stress");
+
+    cfg_driver_hold_ready(0, 0);
+    cfg_driver_stress(
+      1,
+      base_seed ^ 32'h3333_7777,
+      10, 10,
+      6,  6,
+      1,  4,
+      256
+    );
+
+    run_case_dual_port("CASE_10_PARTIAL_WSTRB_SPLIT_STRESS",
+      9000, 9000,
+      16,   16,
+      35,   35,
+      1,    1,
+      1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
+      0, 1, 0, 1,
+      25,
+      90,
+      1,
+      70
+    );
+
+    `uvm_info("RANDOM_TEST", "[CASE_10] Done", UVM_MEDIUM)
   endtask
 
   // ------------------------------------------------------------
@@ -586,21 +916,19 @@ class axi_mm_random_test extends uvm_test;
     bit do_gate;
     time gate_timeout_ns;
 
-    // Split address space into two independent windows (8KB total)
-    // Window 0: 0x0000_0000 .. 0x0000_0FFF (4096B)
-    // Window 1: 0x0000_1000 .. 0x0000_1FFF (4096B)
+    // Window 0: 0x0000_0000 - 0x0000_0FFF (4096B)
+    // Window 1: 0x0000_1000 - 0x0000_1FFF (4096B)
     logic [ADDR_WIDTH-1:0] WIN0_BASE;
     logic [ADDR_WIDTH-1:0] WIN1_BASE;
     int unsigned           WIN_BYTES;
 
-    // seed base (your original)
+    // Base seed
     base_seed = 32'h2026_0128;
 
-    // allow overriding base seed via +BASE_SEED=<dec> (optional)
-    base_seed = get_plusarg_uint("BASE_SEED", base_seed);
-
-    profile = get_plusarg_str("PROFILE");
-    do_gate = get_plusarg_bit("GATE");
+    // Based seed allow overriding
+    base_seed       = get_plusarg_uint("BASE_SEED", base_seed);
+    profile         = get_plusarg_str("PROFILE");
+    do_gate         = get_plusarg_bit("GATE");
     gate_timeout_ns = get_plusarg_uint("GATE_TIMEOUT_NS", 0);
 
     WIN0_BASE = 32'h0000_0000;
@@ -609,294 +937,33 @@ class axi_mm_random_test extends uvm_test;
 
     phase.raise_objection(this);
 
-    `uvm_info("RANDOM_TEST",
-      $sformatf("Starting AXI-MM Random Stress Test (dual-port). BRAM MEM_BYTES=%0d (DEPTH_WORDS=%0d DATA_WIDTH=%0d) PROFILE=%s GATE=%0d CASE=%s CASELIST=%s BASE_SEED=0x%0h TIMEOUT_NS=%0d",
-        MEM_BYTES, DEPTH_WORDS, DATA_WIDTH, profile, do_gate,
-        get_plusarg_str("CASE"), get_plusarg_str("CASELIST"), base_seed, gate_timeout_ns),
-      UVM_MEDIUM)
+    `uvm_info("RANDOM_TEST", "Starting AXI-MM Random Test", UVM_MEDIUM)
+    `uvm_info("RANDOM_TEST", $sformatf("MEM_BYTES=%0d | DEPTH_WORDS=%0d | DATA_WIDTH=%0d | PROFILE=%s | GATE=%0d | CASE=%s | CASELIST=%s | BASE_SEED=0x%0h | TIMEOUT_NS=%0d", MEM_BYTES, DEPTH_WORDS, DATA_WIDTH, profile, do_gate, get_plusarg_str("CASE"), get_plusarg_str("CASELIST"), base_seed, gate_timeout_ns), UVM_LOW)
 
-    // ------------------------------------------------------------
-    // REGRESSION GATE path:
-    //   +GATE=1 : run all 4 profiles in one sim
-    //   +PROFILE=<name> : run that single profile
-    // ------------------------------------------------------------
     if (do_gate) begin
-      run_gate_profile("BP_LOW",     base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
-      run_gate_profile("OOO_HIGH",   base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
-      run_gate_profile("MIX_CHAOS",  base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
-      run_gate_profile("SOAK_LONG",  base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
-      `uvm_info("RANDOM_GATE", "=== RANDOM GATE v1: ALL PROFILES DONE ===", UVM_MEDIUM)
+      run_gate_profile("BP_LOW",    base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
+      run_gate_profile("OOO_HIGH",  base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
+      run_gate_profile("MIX_CHAOS", base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
+      run_gate_profile("SOAK_LONG", base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
+      `uvm_info("RANDOM_GATE", "RANDOM GATE: ALL PROFILES DONE", UVM_MEDIUM)
     end
     else if (profile != "") begin
       run_gate_profile(profile, base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES, gate_timeout_ns);
-      `uvm_info("RANDOM_GATE", "=== RANDOM GATE v1: SINGLE PROFILE DONE ===", UVM_MEDIUM)
+      `uvm_info("RANDOM_GATE", "RANDOM GATE: SINGLE PROFILE DONE", UVM_MEDIUM)
     end
     else begin
-      // ------------------------------------------------------------
-      // Legacy cases (your original behavior)
-      // ------------------------------------------------------------
+      if (case_enabled("1"))  run_case_1_baseline_split             (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("2"))  run_case_2_w_stream_gaps_split        (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("3"))  run_case_3_backpressure_split         (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("4"))  run_case_4_heavy_backpressure_split   (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("5"))  run_case_5_timing_jitter_split        (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("6"))  run_case_6_soak_split                 (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("7"))  run_case_7_fixed_split                (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("8"))  run_case_8_wrap_split_mix_stress      (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("9"))  run_case_9_size_rand_split_mix        (base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
+      if (case_enabled("10")) run_case_10_partial_wstrb_split_stress(base_seed, WIN0_BASE, WIN1_BASE, WIN_BYTES);
 
-      // Case 1: Baseline (no stress), split window
-      if (case_enabled("1")) begin
-        cfg_driver_hold_ready(1, 1);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0002,
-          100, 100,
-          0,   0,
-          0,   0,
-          64
-        );
-
-        run_case_dual_port("CASE_1_BASELINE_SPLIT",
-          2000, 2000,
-          8,    8,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 2: W streaming + gaps + split window
-      if (case_enabled("2")) begin
-        cfg_driver_hold_ready(1, 1);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0002,
-          100, 100,
-          0,   0,
-          1,   2,
-          64
-        );
-
-        run_case_dual_port("CASE_2_W_STREAM_GAPS_SPLIT",
-          3000, 3000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 3: Backpressure (toggle BREADY/RREADY)
-      if (case_enabled("3")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0003,
-          50, 50,
-          0,  0,
-          1,  2,
-          64
-        );
-
-        run_case_dual_port("CASE_3_BACKPRESSURE_SPLIT",
-          3000, 3000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 4: Heavy BACKPRESSURE (split window)
-      if (case_enabled("4")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0004,
-          40, 40,
-          0,  0,
-          1,  1,
-          128
-        );
-
-        run_case_dual_port("CASE_4_BACKPRESSURE_SPLIT",
-          6000, 6000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 5: TIMING JITTER + gaps (split window)
-      if (case_enabled("5")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0005,
-          70, 70,
-          25, 25,
-          1,  8,
-          128
-        );
-
-        run_case_dual_port("CASE_5_TIMING_JITTER_SPLIT",
-          8000, 8000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 6: SOAK (split window)
-      if (case_enabled("6")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0006,
-          85, 85,
-          5,  5,
-          1,  2,
-          128
-        );
-
-        run_case_dual_port("CASE_6_SOAK_SPLIT",
-          20000, 20000,
-          16,    16,
-          50,    50,
-          1,     1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          1, 1, 0, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 7: FIXED burst (split window)
-      if (case_enabled("7")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_0007,
-          80, 80,
-          5,  5,
-          1,  2,
-          128
-        );
-
-        run_case_dual_port("CASE_7_FIXED_SPLIT",
-          12000, 12000,
-          16,    16,
-          50,    50,
-          1,     1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 0, 1, 0,
-          0,
-          0,
-          0,
-          0
-        );
-      end
-
-      // Case 8: WRAP + INCR (split window) - MIX + STRESS
-      if (case_enabled("8")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_5454,
-          60, 60,
-          6,  6,
-          1,  4,
-          256
-        );
-
-        run_case_dual_port("CASE_8_WRAP_SPLIT_MIX_STRESS",
-          8000, 8000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 0, 0, 1,
-          30,
-          0,
-          1,
-          50
-        );
-      end
-
-      // Case 9: SIZE RAND (split window) - mixed stress
-      if (case_enabled("9")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h0000_BEEF,
-          65, 65,
-          4,  4,
-          1,  2,
-          192
-        );
-
-        run_case_dual_port("CASE_9_SIZE_RAND_SPLIT_MIX",
-          8000, 8000,
-          16,   16,
-          50,   50,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          1, 0, 0, 1,
-          35,
-          0,
-          1,
-          55
-        );
-      end
-
-      // Case 10: PARTIAL WSTRB (split window) - write-heavy + stress
-      if (case_enabled("10")) begin
-        cfg_driver_hold_ready(0, 0);
-        cfg_driver_stress(
-          1,
-          base_seed ^ 32'h3333_7777,
-          10, 10,
-          6,  6,
-          1,  4,
-          256
-        );
-
-        run_case_dual_port("CASE_10_PARTIAL_WSTRB_SPLIT_STRESS",
-          9000, 9000,
-          16,   16,
-          35,   35,
-          1,    1,
-          1, WIN0_BASE, WIN1_BASE, WIN_BYTES, WIN_BYTES,
-          0, 1, 0, 1,
-          25,
-          90,
-          1,
-          70
-        );
-      end
-
-      `uvm_info("RANDOM_TEST", "Random Stress Test completed (check SCB FINAL RESULT for PASS/FAIL).", UVM_MEDIUM)
+      `uvm_info("RANDOM_TEST", "Random Test completed", UVM_MEDIUM)
     end
 
     phase.drop_objection(this);

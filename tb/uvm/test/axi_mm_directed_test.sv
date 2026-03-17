@@ -7,29 +7,18 @@ import uvm_pkg::*;
 import axi_mm_pkg::*;
 
 // ------------------------------------------------------------
-// Directed AXI-MM test (factory-safe, non-parameterized)
-// Case selection via plusargs:
-//
-//   +CASE=5.3
-//   +CASELIST=3.1,2,5.3
-//   +CASE=all
-//
-// Default (no args): run only case "5.3"
+// Directed Test
 // ------------------------------------------------------------
 class axi_mm_directed_test extends uvm_test;
 
     `uvm_component_utils(axi_mm_directed_test)
 
-    // ------------------------------------------------------------
-    // Local parameters (fixed for factory)
-    // ------------------------------------------------------------
+    // Local parameters
     localparam int ADDR_WIDTH = 32;
     localparam int DATA_WIDTH = 64;
     localparam int ID_WIDTH   = 4;
 
-    // ------------------------------------------------------------
     // Environment handle
-    // ------------------------------------------------------------
     axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
     // ------------------------------------------------------------
@@ -48,24 +37,19 @@ class axi_mm_directed_test extends uvm_test;
     endfunction
 
     // ------------------------------------------------------------
-    // Helper function for ID guard
+    // Helper function: Safet ID range check
     // ------------------------------------------------------------
     function automatic logic [ID_WIDTH-1:0] safe_id(int unsigned raw, string who="");
         if (raw >= (1<<ID_WIDTH)) begin
-            `uvm_fatal("ID_RANGE",
-                       $sformatf("%s raw_id=%0d exceeds ID_WIDTH=%0d (max=%0d)",
-                                 who, raw, ID_WIDTH, (1<<ID_WIDTH)-1))
+            `uvm_fatal("ID_RANGE", $sformatf("%s raw_id=%0d exceeds ID_WIDTH=%0d (max=%0d)", who, raw, ID_WIDTH, (1<<ID_WIDTH)-1))
         end
         return raw[ID_WIDTH-1:0];
     endfunction
 
-    // ------------------------------------------------------------
-    // Plusarg-driven case selection (Method A)
-    //   +CASE=5.3
-    //   +CASELIST=3.1,5.3,2
-    //   +CASE=all
-    // default: run "5.3" only
-    // ------------------------------------------------------------
+
+    // Case selection
+    localparam string DEFAULT_CASE = "1";   
+
     function automatic string get_plusarg_str(string key);
         string v;
         if ($value$plusargs({key, "=%s"}, v)) return v;
@@ -97,35 +81,36 @@ class axi_mm_directed_test extends uvm_test;
         // Single selection
         if (one != "") return (one == tag);
 
-        // List selection (comma separated)
+        // List selection
         if (list != "") begin
             string tmp;
             tmp = {",", list, ","};
             return (str_find(tmp, {",", tag, ","}) != -1);
         end
 
-        // Default behavior if user didn't pass args:
-        return (tag == "5.3");
+        // Default
+        return (tag == DEFAULT_CASE);
     endfunction
 
+    task automatic banner_case(string cid, string title);
+        `uvm_info("DIRECTED_TEST", $sformatf("========== RUN CASE %s : %s ==========", cid, title), UVM_MEDIUM)
+    endtask
+
     // ------------------------------------------------------------
-    // Backpressure VIF handles (from axi_mm_top.sv config_db)
+    // Backpressure VIF handles
     // ------------------------------------------------------------
     virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master  p0_m;
     virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master  p1_m;
     virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 8).mp_monitor commit_m;
 
     function automatic void get_bp_vifs();
-        if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(
-                this, "env_h.p0_agent", "vif_m", p0_m))
+        if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(this, "env_h.p0_agent", "vif_m", p0_m))
             `uvm_fatal("VIF_GET", "Failed to get p0 master vif: key='vif_m' scope='env_h.p0_agent'")
 
-        if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(
-                this, "env_h.p1_agent", "vif_m", p1_m))
+        if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(this, "env_h.p1_agent", "vif_m", p1_m))
             `uvm_fatal("VIF_GET", "Failed to get p1 master vif: key='vif_m' scope='env_h.p1_agent'")
 
-        if (!uvm_config_db#(virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 8).mp_monitor)::get(
-                this, "env_h.commit_mon", "vif", commit_m))
+        if (!uvm_config_db#(virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 8).mp_monitor)::get(this, "env_h.commit_mon", "vif", commit_m))
             `uvm_fatal("VIF_GET", "Failed to get commit monitor vif: key='vif' scope='env_h.commit_mon'")
     endfunction
 
@@ -135,15 +120,13 @@ class axi_mm_directed_test extends uvm_test;
 
 
     // ------------------------------------------------------------
-    // Case tasks
+    // Case 0: Single beat write/read
     // ------------------------------------------------------------
-
-    // Case 0: Single-beat write/read
     task automatic run_case_0();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr_seq;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd_seq;
 
-        `uvm_info("DIRECT_TEST", "Running Case 0: single-beat RAW", UVM_MEDIUM)
+        banner_case("0", "Single beat write/read");
 
         // Write
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case0");
@@ -165,17 +148,19 @@ class axi_mm_directed_test extends uvm_test;
         rd_seq.dir_id        = safe_id(1, "case0 rd");
         rd_seq.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 0 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_0] Done", UVM_MEDIUM)
     endtask
 
-    // Case 1: Multi-beat INCR burst write/read (4 beats)
+    // ------------------------------------------------------------
+    // Case 1: Multi-beat INCR burst write/read
+    // ------------------------------------------------------------
     task automatic run_case_1();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr_seq;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd_seq;
 
-        `uvm_info("DIRECT_TEST", "Running Case 1: INCR burst write/read", UVM_MEDIUM)
+        banner_case("1", "Multi-beat INCR burst write/read");
 
-        // Write burst (4 beats)
+        // Write burst
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case1");
         wr_seq.directed_mode = 1;
         wr_seq.dir_rw        = AXI_WRITE;
@@ -188,7 +173,7 @@ class axi_mm_directed_test extends uvm_test;
         wr_seq.dir_wstrb     = 8'hFF;
         wr_seq.start(env_h.p0_agent.seqr);
 
-        // Read burst (4 beats)
+        // Read burst
         rd_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("rd_seq_case1");
         rd_seq.directed_mode = 1;
         rd_seq.dir_rw        = AXI_READ;
@@ -199,15 +184,17 @@ class axi_mm_directed_test extends uvm_test;
         rd_seq.dir_size      = 3;
         rd_seq.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 1 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_1] Done", UVM_MEDIUM)
     endtask
 
-    // Case 2: WRAP burst write/read (4 beats, size=8B, wrap boundary=32B)
+    // ------------------------------------------------------------
+    // Case 2: WRAP burst write/read 
+    // ------------------------------------------------------------
     task automatic run_case_2();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr_seq;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd_seq;
 
-        `uvm_info("DIRECT_TEST", "Running Case 2: WRAP burst write/read", UVM_MEDIUM)
+        banner_case("2", "WRAP burst write/read");
 
         // WRITE
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case2");
@@ -233,16 +220,18 @@ class axi_mm_directed_test extends uvm_test;
         rd_seq.dir_size      = 3;
         rd_seq.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 2 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_2] Done", UVM_MEDIUM)
     endtask
 
-    // Case 3.1: Partial strobe write + readback (byte-enable test)
+    // ------------------------------------------------------------
+    // Case 3A: Partial strobe write + readback
+    // ------------------------------------------------------------
     task automatic run_case_3_1();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr_seq;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd_seq;
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 3.1: Partial strobe write/read", UVM_MEDIUM)
+        banner_case("3.1", "Partial strobe write + readback");
 
         addr = 32'h0000_0400;
 
@@ -283,18 +272,21 @@ class axi_mm_directed_test extends uvm_test;
         rd_seq.dir_size      = 3;
         rd_seq.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 3.1 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_3A] Done", UVM_MEDIUM)
     endtask
 
-    // Case 3.2: Cross-port coherence + same-address partial collision
+    // ------------------------------------------------------------
+    // Case 3B: Cross-port coherence + same-address partial collision
+    // ------------------------------------------------------------
     task automatic run_case_3_2();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr_full;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_wr_part;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_rd;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_rd;
+
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 3.2: Cross-port coherence (P0 full -> P1 partial -> read both)", UVM_MEDIUM)
+        banner_case("3.2", "Cross-port coherence + same-address partial collision");
 
         addr = 32'h0000_0410;
 
@@ -344,18 +336,21 @@ class axi_mm_directed_test extends uvm_test;
         p1_rd.dir_wstrb     = 8'hFF;
         p1_rd.start(env_h.p1_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", $sformatf("Case 3.2 completed @addr=0x%0h", addr), UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[Case_3B] Done", UVM_MEDIUM)
     endtask
 
-    // Case 3.3: Same-address cross-port collision + byte-merge (fork)
+    // ------------------------------------------------------------
+    // Case 3C: Same-address cross-port collision + byte-merge
+    // ------------------------------------------------------------
     task automatic run_case_3_3();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr_lo;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_wr_hi;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_rd;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_rd;
+
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 3.3: Same-address cross-port collision + byte-merge", UVM_MEDIUM)
+        banner_case("3.3", "Same-address cross-port collision + byte-merge");
 
         addr = 32'h0000_0420;
 
@@ -412,10 +407,12 @@ class axi_mm_directed_test extends uvm_test;
         p0_rd.start(env_h.p0_agent.seqr);
         p1_rd.start(env_h.p1_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", $sformatf("Case 3.3 completed @addr=0x%0h (expected merge = 0x%016h)", addr, 64'hAABB_CCDD_1122_3344), UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[Case_3C] Done", UVM_MEDIUM)
     endtask
 
-    // Case 4: Burst integrity stress (INCR / WRAP / FIXED) + cross-port coherence
+    // ------------------------------------------------------------
+    // Case 4: Burst integrity stress (INCR/WRAP/FIXED) + cross-port coherence
+    // ------------------------------------------------------------
     task automatic run_case_4();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr_4_1, p0_rd_4_1;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr_4_2, p0_rd_4_2;
@@ -424,14 +421,14 @@ class axi_mm_directed_test extends uvm_test;
 
         logic [ADDR_WIDTH-1:0] a1, a2, a3, a4;
 
-        `uvm_info("DIRECT_TEST", "Running Case 4: Burst integrity (INCR/WRAP/FIXED) + cross-port coherence", UVM_MEDIUM)
+        banner_case("4", "Burst integrity stress (INCR/WRAP/FIXED) + cross-port coherence");
 
         a1 = 32'h0000_0500;
         a2 = 32'h0000_0558; // wrap start
         a3 = 32'h0000_0580;
         a4 = 32'h0000_05C0;
 
-        // 4.1 INCR 4 beats
+        // [4.1] INCR 4 beats
         p0_wr_4_1 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_1");
         p0_wr_4_1.directed_mode = 1;
         p0_wr_4_1.dir_rw        = AXI_WRITE;
@@ -455,7 +452,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_1.start(env_h.p0_agent.seqr);
         p0_rd_4_1.start(env_h.p0_agent.seqr);
 
-        // 4.2 WRAP 4 beats
+        // [4.2] WRAP 4 beats
         p0_wr_4_2 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_2");
         p0_wr_4_2.directed_mode = 1;
         p0_wr_4_2.dir_rw        = AXI_WRITE;
@@ -479,7 +476,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_2.start(env_h.p0_agent.seqr);
         p0_rd_4_2.start(env_h.p0_agent.seqr);
 
-        // 4.3 FIXED burst overwrite (4 beats), read 1 beat
+        // [4.3] FIXED burst overwrite, read 1 beat
         p0_wr_4_3 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_3");
         p0_wr_4_3.directed_mode = 1;
         p0_wr_4_3.dir_rw        = AXI_WRITE;
@@ -503,7 +500,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_3.start(env_h.p0_agent.seqr);
         p0_rd_4_3.start(env_h.p0_agent.seqr);
 
-        // 4.4 Cross-port coherence INCR burst
+        // [4.4] Cross-port coherence INCR burst
         p0_wr_4_4 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_4");
         p0_wr_4_4.directed_mode = 1;
         p0_wr_4_4.dir_rw        = AXI_WRITE;
@@ -540,18 +537,21 @@ class axi_mm_directed_test extends uvm_test;
             p1_rd_4_4.start(env_h.p1_agent.seqr);
         join
 
-        `uvm_info("DIRECT_TEST", "Case 4 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_4] Done", UVM_MEDIUM)
     endtask
 
-    // Case 5.1: Parallel SAME-ADDR INCR bursts (8 beats) w/ complementary WSTRB merge
+    // ------------------------------------------------------------
+    // Case 5A: Parallel same addr INCR 8 beats with complementary WSTRB
+    // ------------------------------------------------------------
     task automatic run_case_5_1();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_wr;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_rd;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_rd;
+
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 5.1: parallel SAME-ADDR INCR 8 beats w/ complementary WSTRB", UVM_MEDIUM)
+        banner_case("5.1", "Parallel same addr INCR 8 beats with complementary WSTRB");
 
         addr = 32'h0000_0620; // 8 beats * 8B = 64B -> [0x620..0x65F]
 
@@ -612,10 +612,12 @@ class axi_mm_directed_test extends uvm_test;
             p1_rd.start(env_h.p1_agent.seqr);
         join
 
-        `uvm_info("DIRECT_TEST", "Case 5.1 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_5A] Done", UVM_MEDIUM)
     endtask
 
-    // Case 5.2: Same-address multi-beat byte-merge across ports
+    // ------------------------------------------------------------
+    // Case 5B: Same addr multi-beat byte merge across ports
+    // ------------------------------------------------------------
     task automatic run_case_5_2();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr_full;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_wr_part;
@@ -623,9 +625,9 @@ class axi_mm_directed_test extends uvm_test;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_rd;
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 5.2: Same-addr merge (P0 full -> P1 partial) 4 beats", UVM_MEDIUM)
+        banner_case("5.2", "Same addr multi-beat byte merge across ports");
 
-        addr = 32'h0000_0700; // 4 beats * 8B = 32B -> [0x700..0x71F]
+        addr = 32'h0000_0700; // 4 beats * 8B = 32B (0x700 - 0x71F)
 
         p0_wr_full = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case5_2_full");
         p0_wr_full.directed_mode = 1;
@@ -674,20 +676,23 @@ class axi_mm_directed_test extends uvm_test;
             p1_rd.start(env_h.p1_agent.seqr);
         join
 
-        `uvm_info("DIRECT_TEST", "Case 5.2 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_5B] Done", UVM_MEDIUM)
     endtask
 
-    // Case 5.3: Same-addr parallel INCR 8 beats + interleaved WSTRB (P0=AA, P1=55)
+    // ------------------------------------------------------------
+    // Case 5C: Same addr parallel INCR 8 beats + interleaved WSTRB (P0=AA, P1=55)
+    // ------------------------------------------------------------
     task automatic run_case_5_3();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_wr;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_wr;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p0_rd;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) p1_rd;
+
         logic [ADDR_WIDTH-1:0] addr;
 
-        `uvm_info("DIRECT_TEST", "Running Case 5.3: Same-addr parallel INCR 8 beats + interleaved WSTRB (AA/55)", UVM_MEDIUM)
+        banner_case("5.3", "Same addr parallel INCR 8 beats + interleaved WSTRB (P0=AA, P1=55)");
 
-        addr = 32'h0000_0780; // 8 beats * 8B = 64B -> [0x780..0x7BF]
+        addr = 32'h0000_0780; // 8 beats * 8B = 64B (0x780 - 0x7BF)
 
         // P0: write AA lanes (odd bytes)
         p0_wr = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case5_3");
@@ -749,23 +754,20 @@ class axi_mm_directed_test extends uvm_test;
             p1_rd.start(env_h.p1_agent.seqr);
         join
 
-        `uvm_info("DIRECT_TEST", "Case 5.3 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_5C] Done", UVM_MEDIUM)
     endtask
 
     // ------------------------------------------------------------
-    // Case 6.1 (BP1): Stall commit_if.ready while issuing a P1 write burst.
-    // Goal:
-    //   - commit engine stalls (no commit beats)
-    //   - P1 last-beat ACK (and B) is deferred until commit resumes
-    //   - after release, commit proceeds and readback matches
+    // Case 6A: Stall commit_if.ready while issuing a P1 write burst
     // ------------------------------------------------------------
     task automatic run_case_6_1();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr0, wr1, wr2;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd;
+
         logic [ADDR_WIDTH-1:0] base;
         int unsigned stall_cycles;
 
-        // --- save/restore commit_mon knobs ---
+        // save/restore commit_mon knobs
         bit          orig_drive_ready_always;
         bit          orig_stress_enable;
         int unsigned orig_ready_prob;
@@ -775,17 +777,14 @@ class axi_mm_directed_test extends uvm_test;
         stall_cycles = 300;
         base         = 32'h0000_0B00;
 
-        `uvm_info("DIRECT_TEST",
-                $sformatf("Running Case 6.1 (BP1): commit.ready stall %0d dma cycles + multiple INCR bursts", stall_cycles),
-                UVM_MEDIUM)
+        banner_case("6.1", "Stall commit_if.ready while issuing a P1 write burst");
 
         // Sanity
         if (env_h.commit_mon == null)
-            `uvm_fatal("DIRECT_TEST", "env_h.commit_mon is null")
+            `uvm_fatal("DIRECTED_TEST", "env_h.commit_mon is null")
 
-        // ------------------------------------------------------------
+
         // 1) Program commit monitor to HOLD ready LOW (no hdl_force)
-        // ------------------------------------------------------------
         orig_drive_ready_always  = env_h.commit_mon.drive_ready_always;
         orig_stress_enable       = env_h.commit_mon.stress_enable;
         orig_ready_prob          = env_h.commit_mon.ready_prob;
@@ -798,9 +797,7 @@ class axi_mm_directed_test extends uvm_test;
         env_h.commit_mon.force_ready_after    = stall_cycles + 1000; // prevent auto-1
         env_h.commit_mon.ready_holdoff_cycles = 0;
 
-        // ------------------------------------------------------------
         // 2) Issue multiple writes that require commit to progress
-        // ------------------------------------------------------------
         wr0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case6_1_0");
         wr0.directed_mode = 1;
         wr0.dir_rw        = AXI_WRITE;
@@ -834,9 +831,7 @@ class axi_mm_directed_test extends uvm_test;
         wr2.dir_wdata     = 64'h6300_0000_0000_0000;
         wr2.dir_wstrb     = 8'hFF;
 
-        // ------------------------------------------------------------
         // 3) Run writes + release thread in parallel
-        // ------------------------------------------------------------
         fork
             begin
                 wr0.start(env_h.p0_agent.seqr);
@@ -863,9 +858,7 @@ class axi_mm_directed_test extends uvm_test;
             end
         join
 
-        // ------------------------------------------------------------
-        // 4) Optional: read back to confirm no deadlock + data is visible
-        // ------------------------------------------------------------
+        // 4) Read back to confirm no deadlock + data is visible
         rd = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_rd_case6_1");
         rd.directed_mode = 1;
         rd.dir_rw        = AXI_READ;
@@ -876,29 +869,23 @@ class axi_mm_directed_test extends uvm_test;
         rd.dir_size      = 3;
         rd.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 6.1 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_6A] Done", UVM_MEDIUM)
     endtask
 
     // ------------------------------------------------------------
-    // Case 6.2 (BP2): Stall P0 BREADY while issuing multiple write bursts.
-    // Goal:
-    //   - DUT must not drop B responses under prolonged B backpressure
-    //   - once BREADY is released, responses drain and readback matches
-    //
-    // Implementation notes (FIXED):
-    //   - Use p0 master clocking block to time-align stall/release (avoid glitch / monitor mismatch)
-    //   - Use contiguous bursts so readback has 100% meaningful compares (no skip holes)
+    // Case 6B: Stall P0 BREADY while issuing multiple write bursts
     // ------------------------------------------------------------
     task automatic run_case_6_2();
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) wr0, wr1, wr2;
         axi_mm_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) rd;
+
         logic [ADDR_WIDTH-1:0] base;
         int unsigned stall_cycles;
 
         // Get P0 master vif so we can do cycle-accurate waits on dma_clk domain
         virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master p0_vif;
 
-        // --- save/restore knobs ---
+        // save/restore knobs
         bit          orig_hold_bready_high;
         bit          orig_stress_enable;
         int unsigned orig_bready_prob;
@@ -907,46 +894,34 @@ class axi_mm_directed_test extends uvm_test;
         stall_cycles = 300;
         base         = 32'h0000_0A00;
 
-        `uvm_info("DIRECT_TEST",
-                $sformatf("Running Case 6.2 (BP2): P0 bready stall %0d dma cycles + 3 contiguous INCR bursts",
-                          stall_cycles),
-                UVM_MEDIUM)
+        banner_case("6.2", "Stall P0 BREADY while issuing multiple write bursts");
 
-        // ------------------------------------------------------------
-        // 0) Sanity: make sure driver exists + fetch vif for cycle wait
-        // ------------------------------------------------------------
+        // 0) Make sure driver exists + fetch vif for cycle wait
         if (env_h.p0_agent == null || env_h.p0_agent.drv == null)
-            `uvm_fatal("DIRECT_TEST", "env_h.p0_agent.drv is null (agent not ACTIVE?)")
+            `uvm_fatal("DIRECT_TEST", "env_h.p0_agent.drv is null")
 
         if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::
               get(null, "*.p0_agent", "vif_m", p0_vif)) begin
-            `uvm_fatal("DIRECT_TEST", "Cannot get p0 mp_master vif from config_db (key=vif_m, path=*.p0_agent)")
+            `uvm_fatal("DIRECT_TEST", "Cannot get p0 mp_master vif from config_db")
         end
 
-        // Align to a clean edge (avoid changing knobs in the middle of a CB sampling window)
+        // Align to a clean edge
         @(p0_vif.cb_master);
 
-        // ------------------------------------------------------------
-        // 1) Program driver to HOLD bready LOW (no fight with driver)
-        // ------------------------------------------------------------
+        // 1) Program driver to HOLD bready LOW
         orig_hold_bready_high  = env_h.p0_agent.drv.hold_bready_high;
         orig_stress_enable     = env_h.p0_agent.drv.stress_enable;
         orig_bready_prob       = env_h.p0_agent.drv.bready_prob;
         orig_force_ready_after = env_h.p0_agent.drv.force_ready_after;
 
-        env_h.p0_agent.drv.hold_bready_high  = 1'b0;          // don't hold high
-        env_h.p0_agent.drv.stress_enable     = 1'b1;          // enable prob mode
-        env_h.p0_agent.drv.bready_prob       = 0;             // always 0 (stall)
+        env_h.p0_agent.drv.hold_bready_high  = 1'b0;                // don't hold high
+        env_h.p0_agent.drv.stress_enable     = 1'b1;                // enable prob mode
+        env_h.p0_agent.drv.bready_prob       = 0;                   // always 0 (stall)
         env_h.p0_agent.drv.force_ready_after = stall_cycles + 1000; // prevent auto-1 escape during stall
 
-        `uvm_info("DIRECT_TEST",
-                  $sformatf("Case 6.2: Applied bready stall knobs (prob=0) for %0d dma cycles", stall_cycles),
-                  UVM_MEDIUM)
+        `uvm_info("DIRECT_TEST", $sformatf("Case 6.2: Applied bready stall knobs (prob=0) for %0d dma cycles", stall_cycles), UVM_MEDIUM)
 
-        // ------------------------------------------------------------
         // 2) Prepare 3 contiguous 4-beat INCR bursts
-        //    Each burst = 4 beats * 8B = 32B = 0x20
-        // ------------------------------------------------------------
         wr0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case6_2_0");
         wr0.directed_mode = 1;
         wr0.dir_rw        = AXI_WRITE;
@@ -980,10 +955,7 @@ class axi_mm_directed_test extends uvm_test;
         wr2.dir_wdata     = 64'h8400_0000_0000_0000;
         wr2.dir_wstrb     = 8'hFF;
 
-        // ------------------------------------------------------------
-        // 3) Launch writes (queued) while bready is stuck low.
-        //    Use cb_master cycle delays (not #time) to avoid CDC/time-unit surprises.
-        // ------------------------------------------------------------
+        // 3) Launch writes while bready is stuck low
         fork
             begin
                 wr0.start(env_h.p0_agent.seqr);
@@ -997,24 +969,20 @@ class axi_mm_directed_test extends uvm_test;
                 wr2.start(env_h.p0_agent.seqr);
             end
             begin
-                // Stall window in dma cycles (cycle-accurate)
+                // Stall window in dma cycles
                 repeat (stall_cycles) @(p0_vif.cb_master);
 
-                // Release backpressure (restore original knob settings) ON a clean edge
+                // Release backpressure
                 env_h.p0_agent.drv.hold_bready_high  = orig_hold_bready_high;
                 env_h.p0_agent.drv.stress_enable     = orig_stress_enable;
                 env_h.p0_agent.drv.bready_prob       = orig_bready_prob;
                 env_h.p0_agent.drv.force_ready_after = orig_force_ready_after;
 
-                `uvm_info("DIRECT_TEST",
-                          "Case 6.2: Released bready stall (restored driver knobs on cb_master edge)",
-                          UVM_MEDIUM)
+                `uvm_info("DIRECT_TEST", "Case 6.2: Released bready stall", UVM_MEDIUM)
             end
         join
 
-        // ------------------------------------------------------------
-        // 4) Read back exactly the written region: 3 bursts * 4 beats = 12 beats contiguous
-        // ------------------------------------------------------------
+        // 4) Read back exactly the written region (3 bursts * 4 beats = 12 beats)
         rd = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_rd_case6_2");
         rd.directed_mode = 1;
         rd.dir_rw        = AXI_READ;
@@ -1025,24 +993,16 @@ class axi_mm_directed_test extends uvm_test;
         rd.dir_size      = 3;
         rd.start(env_h.p0_agent.seqr);
 
-        `uvm_info("DIRECT_TEST", "Case 6.2 completed", UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "[CASE_6B] Done", UVM_MEDIUM)
     endtask
-
 
     // ------------------------------------------------------------
     // Run phase: deterministic directed stimulus with selection
     // ------------------------------------------------------------
     virtual task run_phase(uvm_phase phase);
-        string one, list;
-        one  = get_plusarg_str("CASE");
-        list = get_plusarg_str("CASELIST");
-
         phase.raise_objection(this);
 
-        `uvm_info("DIRECT_TEST",
-                  $sformatf("Directed test case selection: +CASE='%s' +CASELIST='%s' (default => only 5.3)",
-                            one, list),
-                  UVM_MEDIUM)
+        `uvm_info("DIRECTED_TEST", "Starting AXI-MM Directed Test", UVM_MEDIUM)
 
         if (case_enabled("0"))   run_case_0();
         if (case_enabled("1"))   run_case_1();
@@ -1057,6 +1017,7 @@ class axi_mm_directed_test extends uvm_test;
         if (case_enabled("6.1")) run_case_6_1();
         if (case_enabled("6.2")) run_case_6_2();
 
+        `uvm_info("DIRECTED_TEST", "Directed Test completed", UVM_MEDIUM)
         phase.drop_objection(this);
     endtask
 

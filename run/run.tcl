@@ -1,9 +1,7 @@
-# Test items: axi_mm_smoke_test, axi_mm_random_test, axi_mm_corner_test, axi_mm_directed_test, axi_mm_coverage_test
-
 file mkdir logs
 
 # --------------------------------------------------
-# Helpers: keep newest N files matching pattern in logs/
+# Keep newest N files matching pattern in logs
 # --------------------------------------------------
 proc keep_newest {pattern keep} {
     set files [glob -nocomplain -directory logs $pattern]
@@ -22,13 +20,12 @@ proc keep_newest {pattern keep} {
 
 # --------------------------------------------------
 # Keep only newest N logs and newest N wlf
-# NOTE: 改成保留多一點，避免 multi-seed 被你自己清掉
 # --------------------------------------------------
 set KEEP_N 30
 keep_newest "sim_*.log" $KEEP_N
 keep_newest "sim_*.wlf" $KEEP_N
 
-# Clean temporary wave fragments (optional)
+# Clean temporary wave fragments
 catch {file delete -force -- {*}[glob -nocomplain -directory logs wlft*]}
 
 # --------------------------------------------------
@@ -43,7 +40,7 @@ for {set k 0} {$k < $N_SEEDS} {incr k} {
   set SEED [expr {$BASE_SEED + $k * $SEED_STEP}]
 
   # --------------------------------------------------
-  # Create timestamped filenames (加 seed，避免覆蓋)
+  # Create timestamped filenames
   # --------------------------------------------------
   set ts [clock format [clock seconds] -format "%Y%m%d_%H%M%S"]
   set LOGFILE "logs/sim_${ts}_seed${SEED}.log"
@@ -60,17 +57,18 @@ for {set k 0} {$k < $N_SEEDS} {incr k} {
 
   # --------------------------------------------------
   # Run sim
+  # - TESTNAME: axi_mm_smoke_test, axi_mm_random_test, axi_mm_corner_test, axi_mm_directed_test, axi_mm_coverage_test
   # --------------------------------------------------
   vsim -coverage -L uvm12 -wlf $WLFNAME -voptargs=+acc work.axi_mm_top \
     -uvmcontrol=all \
     +UVM_VERBOSITY=UVM_HIGH \
-    +UVM_TESTNAME=axi_mm_coverage_test \
+    +UVM_TESTNAME=axi_mm_directed_test \
     +GATE=1 \
     +BASE_SEED=$SEED \
     +GATE_TIMEOUT_NS=200000000 \
     +UVM_OBJECTION_TRACE \
     +UVM_FINISH_ON_COMPLETION=1 \
-    +CASELIST=8
+    +CASELIST=0
 
   add wave -r sim:/axi_mm_top/*
   run -all

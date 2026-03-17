@@ -7,20 +7,18 @@ import uvm_pkg::*;
 import axi_mm_pkg::*;
 
 // ------------------------------------------------------------
-// Corner Test (non-parameterized, factory-safe)
+// Corner Test
 // ------------------------------------------------------------
 class axi_mm_corner_test extends uvm_test;
 
   `uvm_component_utils(axi_mm_corner_test)
 
-  // ------------------------------------------------------------
-  // Local parameters (fixed at test level)
-  // ------------------------------------------------------------
+  // Local parameters
   localparam int ADDR_WIDTH = 32;
   localparam int DATA_WIDTH = 64;
   localparam int ID_WIDTH   = 4;
 
-  // Match your BRAM config used in random_test
+  // BRAM configuration
   localparam int unsigned DEPTH_WORDS    = 1024;
   localparam int unsigned BYTES_PER_BEAT = (DATA_WIDTH/8);
   localparam int unsigned MEM_BYTES      = DEPTH_WORDS * BYTES_PER_BEAT; // 8192
@@ -30,28 +28,20 @@ class axi_mm_corner_test extends uvm_test;
   localparam logic [ADDR_WIDTH-1:0] WIN1_BASE = 32'h0000_1000;
   localparam int unsigned           WIN_BYTES = 4096;
 
-  // IMPORTANT:
-  // Scoreboard compares only when (beat_t - last_commit_time) >= COMMIT_STABLE_DELAY (25ns).
-  // Also commit stream apply can lag due to arbitration/backpressure.
-  // So we insert a conservative post-write delay to make READ checks meaningful.
+
+  // Scoreboard compares only when (beat_t - last_commit_time) >= COMMIT_STABLE_DELAY (30ns)
+  // Commit stream apply may lag due to arbitration/backpressure
+  // Insert post-write delay to make READ checks meaningful
   localparam time POST_WRITE_DELAY = 100ns;
 
-  // After reset/flush, your monitor has IGNORE_WINDOW = 500ns;
-  // keep post-reset gap comfortably larger.
+  // Monitor has IGNORE_WINDOW = 500ns
   localparam time POST_RESET_DELAY = 1us;
 
-  // ------------------------------------------------------------
   // Environment handle
-  // ------------------------------------------------------------
   axi_mm_env #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) env_h;
 
-  // ------------------------------------------------------------
-  // Plusarg-driven case selection (Method A) - Questa safe
-  //   +CASE=5.3
-  //   +CASELIST=3.1,5.3,2
-  //   +CASE=all
-  // default: run DEFAULT_CASE only (set below)
-  // ------------------------------------------------------------
+
+  // Case selection
   localparam string DEFAULT_CASE = "1";
 
   function automatic string get_plusarg_str(string key);
@@ -85,29 +75,23 @@ class axi_mm_corner_test extends uvm_test;
       // Single selection
       if (one != "") return (one == tag);
 
-      // List selection (comma separated)
+      // List selection
       if (list != "") begin
           string tmp;
           tmp = {",", list, ","};
           return (str_find(tmp, {",", tag, ","}) != -1);
       end
 
-      // Default behavior if user didn't pass args:
+      // Default
       return (tag == DEFAULT_CASE);
   endfunction
 
   task automatic banner_case(string cid, string title);
-    `uvm_info("CORNER_TEST",
-      $sformatf("========== RUN CASE %s : %s ==========", cid, title),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("========== RUN CASE %s : %s ==========", cid, title), UVM_MEDIUM)
   endtask
 
   // ------------------------------------------------------------
-  // Local sequence: run a fixed list of steps (items + delays)
-  //
-  // Motivation:
-  //   Scoreboard compares READ only after commit visibility + stable delay.
-  //   Plain "list of items" can't insert wait time between W and R.
+  // Local sequence
   // ------------------------------------------------------------
   class axi_mm_corner_step_seq extends uvm_sequence #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH));
     `uvm_object_utils(axi_mm_corner_step_seq)
@@ -172,18 +156,16 @@ class axi_mm_corner_test extends uvm_test;
   endfunction
 
   // ------------------------------------------------------------
-  // Reset phase (config-only)
+  // Reset phase
   // ------------------------------------------------------------
   virtual task reset_phase(uvm_phase phase);
     super.reset_phase(phase);
 
-    `uvm_info("CORNER_TEST",
-              "[RESET_PHASE] config-only (initial reset will be done in run_phase)",
-              UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[RESET_PHASE] Configuration only", UVM_MEDIUM)
   endtask
 
   // ------------------------------------------------------------
-  // Helper: configure both drivers' READY policy
+  // Helper task: Configure driver's READY policy
   // ------------------------------------------------------------
   task automatic cfg_driver_hold_ready(
       input bit hold_bready_high,
@@ -197,32 +179,34 @@ class axi_mm_corner_test extends uvm_test;
   endtask
 
   // ------------------------------------------------------------
-  // Helper: disable stress mode
+  // Helper task: Disable stress mode
   // ------------------------------------------------------------
   task automatic cfg_driver_stress_off();
     uvm_config_db#(bit)::set(this, "env_h.p0_agent.drv", "stress_enable", 0);
     uvm_config_db#(bit)::set(this, "env_h.p1_agent.drv", "stress_enable", 0);
   endtask
 
-  // enable stress mode (if your driver supports it)
+  // ------------------------------------------------------------
+  // Helper task: Enable stress mode
+  // ------------------------------------------------------------
   task automatic cfg_driver_stress_on();
     uvm_config_db#(bit)::set(this, "env_h.p0_agent.drv", "stress_enable", 1);
     uvm_config_db#(bit)::set(this, "env_h.p1_agent.drv", "stress_enable", 1);
   endtask
 
   // ------------------------------------------------------------
-  // Helper: align an address to beat size (BYTES_PER_BEAT)
+  // Helper function: Align address to beat size (BYTES_PER_BEAT)
   // ------------------------------------------------------------
   function automatic logic [ADDR_WIDTH-1:0] align_to_beat(input logic [ADDR_WIDTH-1:0] a);
     return (a & ~(BYTES_PER_BEAT-1));
   endfunction
 
   // ------------------------------------------------------------
-  // Helper: create deterministic per-beat data
+  // Helper function: Create deterministic per-beat data
   // ------------------------------------------------------------
   function automatic logic [DATA_WIDTH-1:0] beat_data_seed(
-      input logic [ID_WIDTH-1:0] id,
-      input int unsigned beat_idx,
+      input logic [ID_WIDTH-1:0]   id,
+      input int unsigned           beat_idx,
       input logic [ADDR_WIDTH-1:0] addr
   );
     logic [DATA_WIDTH-1:0] v;
@@ -234,8 +218,7 @@ class axi_mm_corner_test extends uvm_test;
   endfunction
 
   // ------------------------------------------------------------
-  // Helper: build a transaction item (corner-friendly)
-  // IMPORTANT:
+  // Helper function: Build transaction item
   //  - op_kind/wait_bid set BEFORE set_beats_len()
   // ------------------------------------------------------------
   function automatic axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) mk_tr(
@@ -256,9 +239,7 @@ class axi_mm_corner_test extends uvm_test;
     string nm;
     int unsigned beats;
 
-    nm = $sformatf("tr_%s_id%0h_addr%0h_len%0d",
-                   (is_read ? "R" : "W"),
-                   id, addr, len);
+    nm = $sformatf("tr_%s_id%0h_addr%0h_len%0d", (is_read ? "R" : "W"), id, addr, len);
 
     tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create(nm);
 
@@ -294,7 +275,7 @@ class axi_mm_corner_test extends uvm_test;
   endfunction
 
   // ------------------------------------------------------------
-  // Helper: build a WRITE burst transaction with full payload
+  // Helper function: Build WRITE burst transaction with full payload
   // ------------------------------------------------------------
   function automatic axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) mk_wr_burst(
       input logic [ADDR_WIDTH-1:0]      addr,
@@ -337,14 +318,16 @@ class axi_mm_corner_test extends uvm_test;
     return tr;
   endfunction
 
-  // ============================================================
-  // Case 1: Zero-length & Single-beat bursts (LEN=0 => 1 beat)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 1: Zero-length & Single-beat bursts
+  // ------------------------------------------------------------
   task automatic run_case_1_single_beat();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
 
     logic [ADDR_WIDTH-1:0] a0, a1, a1z, a0p;
+
+    banner_case("1", "LEN=0 single-beat (INCR/FIXED) + WSTRB");
 
     a0  = align_to_beat(WIN0_BASE + 32'h000);
     a0p = align_to_beat(WIN0_BASE + 32'h060);
@@ -354,7 +337,7 @@ class axi_mm_corner_test extends uvm_test;
     seq0 = axi_mm_corner_step_seq::type_id::create("C1_seq0");
     seq1 = axi_mm_corner_step_seq::type_id::create("C1_seq1");
 
-    // P0: write then wait then read
+    // P0: write -> wait -> read
     seq0.push_item(mk_tr(0, a0, 2'b01, 3'd3, 8'd0, 4'h1, {BYTES_PER_BEAT{1'b1}}, 64'hC1C1_0000_0000_0001, "C1.P0.W.INCR.LEN0"));
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, a0, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0, "C1.P0.R.INCR.LEN0"));
@@ -379,10 +362,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, a1z, 2'b01, 3'd3, 8'd0, 4'h9, '0, '0, "C1.P1.R.BACK.KNOWN"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_1] Start: LEN=0 single-beat READ/WRITE + WSTRB patterns (with post-write delay=%0t). a0=0x%0h a1=0x%0h",
-                POST_WRITE_DELAY, a0, a1),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_1] Start: LEN=0 single-beat READ/WRITE + WSTRB patterns (with post-write delay=%0t). a0=0x%0h a1=0x%0h", POST_WRITE_DELAY, a0, a1), UVM_MEDIUM)
 
     fork
       begin
@@ -395,12 +375,12 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_1] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_1] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
+  // ------------------------------------------------------------
   // Case 2: Boundary crossing at window edge + end-of-window edge
-  // ============================================================
+  // ------------------------------------------------------------
   task automatic run_case_2_boundary_edges();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -409,7 +389,9 @@ class axi_mm_corner_test extends uvm_test;
     logic [ADDR_WIDTH-1:0] p0_a_cross_4b;
     logic [ADDR_WIDTH-1:0] p1_last;
 
-    // Derive from window sizes (avoid magic constants)
+    banner_case("2", "Boundary crossing + end-of-window");
+
+    // Derive from window sizes
     p0_a_cross_2b = align_to_beat(WIN0_BASE + (WIN_BYTES - BYTES_PER_BEAT));         // last beat in window
     p0_a_cross_4b = align_to_beat(WIN0_BASE + (WIN_BYTES - (4*BYTES_PER_BEAT)));     // last 4 beats region
     p1_last       = align_to_beat(WIN1_BASE + (WIN_BYTES - BYTES_PER_BEAT));
@@ -432,10 +414,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, p1_last, 2'b01, 3'd3, 8'd0, 4'h6, '0, '0, "C2.P1.R.LAST"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_2] Start: boundary-cross bursts (derived) @0x%0h(len1) & 0x%0h(len3), P1 last-beat @0x%0h",
-                p0_a_cross_2b, p0_a_cross_4b, p1_last),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_2] Start: boundary-cross bursts @0x%0h(len1) & 0x%0h(len3), P1 last-beat @0x%0h", p0_a_cross_2b, p0_a_cross_4b, p1_last), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -443,12 +422,12 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_2] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_2] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 3: Ordering + partial merge (NO cross-window fake conflict)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 3: Ordering + partial merge
+  // ------------------------------------------------------------
   task automatic run_case_3_ordering_and_conflict();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -458,6 +437,8 @@ class axi_mm_corner_test extends uvm_test;
 
     logic [DATA_WIDTH-1:0] full0, part0;
     logic [BYTES_PER_BEAT-1:0] wmask_low4;
+
+    banner_case("3", "Ordering + partial merge (per-window)");
 
     A0 = align_to_beat(WIN0_BASE + 32'h0060);
     A1 = align_to_beat(WIN1_BASE + 32'h0060);
@@ -487,16 +468,13 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_item(mk_tr(1, B0, 2'b01, 3'd3, 8'd0, 4'hA, '0, '0, "C3.P0.R.B0"));
     seq0.push_item(mk_tr(1, B1, 2'b01, 3'd3, 8'd0, 4'hB, '0, '0, "C3.P0.R.B1"));
 
-    // P1: do its own merge at its own window address (avoid out-of-window mapping ambiguity)
+    // P1: do its own merge at its own window address
     seq1.push_item(mk_tr(0, A1, 2'b01, 3'd3, 8'd0, 4'h5, 8'hFF, 64'hC3C3_6100_3333_4444, "C3.P1.SEED.FULL"));
     seq1.push_item(mk_tr(0, A1, 2'b01, 3'd3, 8'd0, 4'h6, wmask_low4, 64'hDEAD_BEEF_5555_6666, "C3.P1.W.PARTIAL.LOW4"));
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, A1, 2'b01, 3'd3, 8'd0, 4'h7, '0, '0, "C3.P1.R.MERGECHK"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_3] Start: ordering + partial merge (per-window). A0=0x%0h A1=0x%0h",
-                A0, A1),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_3] Start: ordering + partial merge. A0=0x%0h A1=0x%0h", A0, A1), UVM_MEDIUM)
 
     fork
       begin seq1.start(env_h.p1_agent.seqr); end
@@ -504,18 +482,20 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_3] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_3] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
+  // ------------------------------------------------------------
   // Case 4: AW/AR contention + verified burst read (FORCED OVERLAP)
-  // ============================================================
+  // ------------------------------------------------------------
   task automatic run_case_4_aw_ar_contention();
     axi_mm_corner_step_seq prime0, prime1;
     axi_mm_corner_step_seq cont0, cont1;
 
     logic [ADDR_WIDTH-1:0] p0_r0, p1_r0;
     logic [ADDR_WIDTH-1:0] p0_wburst, p1_wburst;
+
+    banner_case("4", "AW/AR contention overlap"); 
 
     p0_r0     = align_to_beat(WIN0_BASE + 32'h0280);
     p1_r0     = align_to_beat(WIN1_BASE + 32'h0280);
@@ -528,16 +508,14 @@ class axi_mm_corner_test extends uvm_test;
     prime0.push_item(mk_wr_burst(p0_r0, 2'b01, 3'd3, 8'd1, 4'h1, 64'hC4C4_F0E0_0000_0000, {BYTES_PER_BEAT{1'b1}}));
     prime1.push_item(mk_wr_burst(p1_r0, 2'b01, 3'd3, 8'd1, 4'h5, 64'hC4C4_F1E0_0000_0000, {BYTES_PER_BEAT{1'b1}}));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_4] PhaseA PRIME start. p0_r0=0x%0h p1_r0=0x%0h", p0_r0, p1_r0),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_4] PhaseA PRIME start. p0_r0=0x%0h p1_r0=0x%0h", p0_r0, p1_r0), UVM_MEDIUM)
 
     fork
       prime0.start(env_h.p0_agent.seqr);
       begin #1ns; prime1.start(env_h.p1_agent.seqr); end
     join
 
-    // allow commits to settle before we do contention reads (avoid scoreboard skip)
+    // Allow commits to settle before we do contention reads
     #POST_WRITE_DELAY;
 
     cont0 = axi_mm_corner_step_seq::type_id::create("C4_cont0");
@@ -553,9 +531,7 @@ class axi_mm_corner_test extends uvm_test;
     cont1.push_item(mk_wr_burst(p1_wburst, 2'b01, 3'd3, 8'd3, 4'h8, 64'hC4C4_F1EB_0000_8000, {BYTES_PER_BEAT{1'b1}}));
     cont1.push_delay(POST_WRITE_DELAY);
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_4] PhaseB CONTENTION start. p0_wburst=0x%0h p1_wburst=0x%0h", p0_wburst, p1_wburst),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_4] PhaseB CONTENTION start. p0_wburst=0x%0h p1_wburst=0x%0h", p0_wburst, p1_wburst), UVM_MEDIUM)
 
     fork
       cont0.start(env_h.p0_agent.seqr);
@@ -563,12 +539,12 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_4] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_4] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
+  // ------------------------------------------------------------
   // Case 5: WRAP burst edge cases + FIXED burst last-wins
-  // ============================================================
+  // ------------------------------------------------------------
   task automatic run_case_5_wrap_fixed();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -580,17 +556,19 @@ class axi_mm_corner_test extends uvm_test;
     localparam int unsigned WRAP_BEATS = 4;
     localparam int unsigned WRAP_BYTES = WRAP_BEATS * BYTES_PER_BEAT; // 32
 
+    banner_case("5", "WRAP(4beat) edges + FIXED last-wins");
+
     p0_wrap_base = align_to_beat(WIN0_BASE + 32'h0100);
     p1_wrap_base = align_to_beat(WIN1_BASE + 32'h0100);
     p0_fixed     = align_to_beat(WIN0_BASE + 32'h0180);
 
-    // ensure 32B boundary alignment for wrap_base
+    // Ensure 32B boundary alignment for wrap_base
     p0_wrap_base &= ~(WRAP_BYTES-1);
     p1_wrap_base &= ~(WRAP_BYTES-1);
 
-    // Off-by-one start = base + (32-8)=24
-    p0_wrap_off  = p0_wrap_base + (WRAP_BYTES - BYTES_PER_BEAT);
-    p1_wrap_off  = p1_wrap_base + (WRAP_BYTES - BYTES_PER_BEAT);
+    // Offset by 1B
+    p0_wrap_off  = p0_wrap_base + (WRAP_BYTES - BYTES_PER_BEAT); // base + (32 - 8)
+    p1_wrap_off  = p1_wrap_base + (WRAP_BYTES - BYTES_PER_BEAT); // base + (32 - 8)
 
     seq0 = axi_mm_corner_step_seq::type_id::create("C5_seq0");
     seq1 = axi_mm_corner_step_seq::type_id::create("C5_seq1");
@@ -603,7 +581,6 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, p0_wrap_off, 2'b10, 3'd3, 8'd3, 4'h4, '0, '0, "C5.P0.R.WRAP_OFF"));
 
-    // FIXED: last beat overwrites same address (driver sends beat0..3; addr fixed)
     seq0.push_item(mk_wr_burst(p0_fixed, 2'b00, 3'd3, 8'd3, 4'h5, 64'hC5C5_F1E0_0000_6000, {BYTES_PER_BEAT{1'b1}}));
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, p0_fixed, 2'b01, 3'd3, 8'd0, 4'h6, '0, '0, "C5.P0.R.FIXED_LAST"));
@@ -616,10 +593,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, p1_wrap_off, 2'b10, 3'd3, 8'd3, 4'hC, '0, '0, "C5.P1.R.WRAP_OFF"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_5] Start: WRAP exact/off + FIXED last-wins. p0_wrap_base=0x%0h p0_wrap_off=0x%0h p0_fixed=0x%0h | p1_wrap_base=0x%0h p1_wrap_off=0x%0h",
-                p0_wrap_base, p0_wrap_off, p0_fixed, p1_wrap_base, p1_wrap_off),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_5] Start: WRAP exact/off + FIXED last-wins. p0_wrap_base=0x%0h p0_wrap_off=0x%0h p0_fixed=0x%0h | p1_wrap_base=0x%0h p1_wrap_off=0x%0h", p0_wrap_base, p0_wrap_off, p0_fixed, p1_wrap_base, p1_wrap_off), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -627,12 +601,12 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_5] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_5] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 6: WRAP burst edge cases (8 beats, 64B boundary)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 6: WRAP burst edge cases (8 beats/64B boundary)
+  // ------------------------------------------------------------
   task automatic run_case_6_wrap_edges();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -644,6 +618,8 @@ class axi_mm_corner_test extends uvm_test;
     localparam int WRAP_BEATS = 8;
     localparam int WRAP_BYTES = WRAP_BEATS * BYTES_PER_BEAT; // 64
     logic [ADDR_WIDTH-1:0] wrap_align_mask;
+
+    banner_case("6", "WRAP(8beat) edges");
 
     wrap_align_mask = ~(WRAP_BYTES-1);
 
@@ -675,10 +651,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, p1_wB, 2'b10, 3'd3, 8'd7, 4'hC, '0, '0, "C6.P1.R.WB"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_6] Start: WRAP edges (8 beats, 64B boundary). P0 base=0x%0h A=0x%0h B=0x%0h | P1 base=0x%0h A=0x%0h B=0x%0h",
-                p0_wrap_base, p0_wA, p0_wB, p1_wrap_base, p1_wA, p1_wB),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_6] Start: WRAP edges (8 beats/64B boundary). P0 base=0x%0h A=0x%0h B=0x%0h | P1 base=0x%0h A=0x%0h B=0x%0h", p0_wrap_base, p0_wA, p0_wB, p1_wrap_base, p1_wA, p1_wB), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -686,17 +659,19 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_6] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_6] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 7: Partial WSTRB patterns (insert delay before each read)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 7: Partial WSTRB patterns
+  // ------------------------------------------------------------
   task automatic run_case_7_wstrb_patterns();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
 
     logic [ADDR_WIDTH-1:0] p0_addr, p1_addr;
+
+    banner_case("7", "WSTRB patterns");
 
     p0_addr = align_to_beat(WIN0_BASE + 32'h0180);
     p1_addr = align_to_beat(WIN1_BASE + 32'h0180);
@@ -754,10 +729,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, p1_addr, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0, "C7.P1.R.AFTER55"));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_7] Start: Partial WSTRB patterns (with delay=%0t). P0 addr=0x%0h | P1 addr=0x%0h",
-                POST_WRITE_DELAY, p0_addr, p1_addr),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_7] Start: Partial WSTRB patterns. Delay=%0t | P0 addr=0x%0h | P1 addr=0x%0h", POST_WRITE_DELAY, p0_addr, p1_addr), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -765,21 +737,24 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_7] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_7] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 8A: Same-port multiple outstanding AW (split ops)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 8A: Same-port multiple outstanding AW 
+  // ------------------------------------------------------------
   task automatic run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
     axi_mm_corner_step_seq seq0;
     axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr;
+
     logic [ADDR_WIDTH-1:0] a_addr, b_addr;
 
-    localparam logic [1:0] BURST_INCR = 2'b01;
-    localparam logic [2:0] SIZE_8B    = 3'd3;
-    localparam logic [7:0] LEN_4B     = 8'd3; // 4 beats
-    localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL = {BYTES_PER_BEAT{1'b1}};
+    localparam logic [1:0]                BURST_INCR = 2'b01;
+    localparam logic [2:0]                SIZE_8B    = 3'd3;
+    localparam logic [7:0]                LEN_4B     = 8'd3; // 4 beats
+    localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL  = {BYTES_PER_BEAT{1'b1}};
+
+    banner_case("8.1", "8A depth1-friendly split AW/W");
 
     seq0 = axi_mm_corner_step_seq::type_id::create("C8A_seq0_fix");
 
@@ -802,7 +777,7 @@ class axi_mm_corner_test extends uvm_test;
     tr = mk_wr_burst(b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, 64'hC8B0_0000_0000_0000, WSTRB_ALL, OP_W_ONLY, 4'h2, "C8A.W_B");
     seq0.push_item(tr);
 
-    // Wait B (reverse order)
+    // Wait B in reverse order
     tr = mk_tr(0, b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h2, '0, '0, "C8A.BWAIT_B_FIRST", 0, OP_B_WAIT, 4'h2);
     seq0.push_item(tr);
     tr = mk_tr(0, a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h1, '0, '0, "C8A.BWAIT_A_SECOND", 0, OP_B_WAIT, 4'h1);
@@ -815,20 +790,17 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_item(mk_tr(1, a_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h3, '0, '0, "C8A.R_A", 0));
     seq0.push_item(mk_tr(1, b_addr, BURST_INCR, SIZE_8B, LEN_4B, 4'h4, '0, '0, "C8A.R_B", 0));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_8A_FIX] Start: depth1-friendly split write + post-write delay=%0t. A=0x%0h(id=1) B=0x%0h(id=2)",
-                POST_WRITE_DELAY, a_addr, b_addr),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_8A] Start: depth1-friendly split write + post-write delay=%0t. A=0x%0h(id=1) B=0x%0h(id=2)", POST_WRITE_DELAY, a_addr, b_addr), UVM_MEDIUM)
 
     seq0.start(env_h.p0_agent.seqr);
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_8A_FIX] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_8A] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 8B: outstanding writes + out-of-order B response (per port)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 8B: Outstanding writes + out-of-order B response 
+  // ------------------------------------------------------------
   task automatic run_case_8b_outstanding_ooo_b_p0p1();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -839,6 +811,8 @@ class axi_mm_corner_test extends uvm_test;
     localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL = {BYTES_PER_BEAT{1'b1}};
 
     logic [ADDR_WIDTH-1:0] p0_a, p0_b, p1_a, p1_b;
+
+    banner_case("8.2", "8B outstanding + reverse B_WAIT");
 
     p0_a = align_to_beat(WIN0_BASE + 32'h0200);
     p0_b = align_to_beat(WIN0_BASE + 32'h0300);
@@ -870,10 +844,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_item(mk_tr(1, p1_a, BURST_INCR, SIZE_8B, LEN_4B, 4'h3, '0, '0, "C8B.P1.R_A", 0));
     seq1.push_item(mk_tr(1, p1_b, BURST_INCR, SIZE_8B, LEN_4B, 4'h4, '0, '0, "C8B.P1.R_B", 0));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_8B] Start: outstanding writes + reverse B_WAIT + post-write delay=%0t. P0(A=0x%0h,B=0x%0h) P1(A=0x%0h,B=0x%0h)",
-                POST_WRITE_DELAY, p0_a, p0_b, p1_a, p1_b),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_8B] Start: outstanding writes + reverse B_WAIT + post-write delay=%0t. P0(A=0x%0h,B=0x%0h) P1(A=0x%0h,B=0x%0h)", POST_WRITE_DELAY, p0_a, p0_b, p1_a, p1_b), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -884,10 +855,9 @@ class axi_mm_corner_test extends uvm_test;
     `uvm_info("CORNER_TEST", "[CASE_8B] Done.", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 8 (BONUS): AW backpressure observable (depth4 style)
-  // NOTE: add post-write delay before reads
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 8: AW backpressure (depth = 4)
+  // ------------------------------------------------------------
   task automatic run_case_8_outstanding_aw_depth4_p0p1();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -899,6 +869,8 @@ class axi_mm_corner_test extends uvm_test;
 
     logic [ADDR_WIDTH-1:0] p0_a, p0_b, p0_c, p0_d;
     logic [ADDR_WIDTH-1:0] p1_a, p1_b, p1_c, p1_d;
+
+    banner_case("8", "Outstanding AW depth4");
 
     p0_a = align_to_beat(WIN0_BASE + 32'h0200);
     p0_b = align_to_beat(WIN0_BASE + 32'h0300);
@@ -967,10 +939,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_item(mk_tr(1, p1_c, BURST_INCR, SIZE_8B, LEN_4B, 4'hA, '0, '0, "C8.P1.R_C", 0));
     seq1.push_item(mk_tr(1, p1_d, BURST_INCR, SIZE_8B, LEN_4B, 4'hB, '0, '0, "C8.P1.R_D", 0));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_8_BONUS] Start: AW backpressure observable + post-write delay=%0t. P0(A=0x%0h,B=0x%0h,C=0x%0h,D=0x%0h) P1(A=0x%0h,B=0x%0h,C=0x%0h,D=0x%0h)",
-                POST_WRITE_DELAY, p0_a, p0_b, p0_c, p0_d, p1_a, p1_b, p1_c, p1_d),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_8] Start: AW backpressure observable + post-write delay=%0t. P0(A=0x%0h,B=0x%0h,C=0x%0h,D=0x%0h) P1(A=0x%0h,B=0x%0h,C=0x%0h,D=0x%0h)", POST_WRITE_DELAY, p0_a, p0_b, p0_c, p0_d, p1_a, p1_b, p1_c, p1_d), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -978,13 +947,12 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_8_BONUS] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_8] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 9A / 9B: Mixed-ID ordering
-  // NOTE: add post-write delay before readbacks
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 9A: Mixed-ID ordering (P0)
+  // ------------------------------------------------------------
   task automatic run_case_9a_mixed_id_ordering_p0();
     axi_mm_corner_step_seq seq0;
 
@@ -994,6 +962,8 @@ class axi_mm_corner_test extends uvm_test;
     localparam logic [BYTES_PER_BEAT-1:0] WSTRB_ALL = {BYTES_PER_BEAT{1'b1}};
 
     logic [ADDR_WIDTH-1:0] a1, a2, a3;
+
+    banner_case("9.1", "9A mixed-ID ordering P0");
 
     a1 = align_to_beat(WIN0_BASE + 32'h0200);
     a2 = align_to_beat(WIN0_BASE + 32'h0300);
@@ -1019,17 +989,17 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_item(mk_tr(1, a2, BURST_INCR, SIZE_8B, LEN_4B, 4'h9, '0, '0, "C9A.P0.R_ADDR2", 0));
     seq0.push_item(mk_tr(1, a3, BURST_INCR, SIZE_8B, LEN_4B, 4'hA, '0, '0, "C9A.P0.R_ADDR3", 0));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_9A] Start: P0 mixed-ID ordering + post-write delay=%0t. addr1=0x%0h addr2=0x%0h addr3=0x%0h",
-                POST_WRITE_DELAY, a1, a2, a3),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_9A] Start: P0 mixed-ID ordering + post-write delay=%0t. addr1=0x%0h addr2=0x%0h addr3=0x%0h", POST_WRITE_DELAY, a1, a2, a3), UVM_MEDIUM)
 
     seq0.start(env_h.p0_agent.seqr);
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_9A] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_9A] Done", UVM_MEDIUM)
   endtask
 
+  // ------------------------------------------------------------
+  // Case 9B: Mixed-ID ordering (P0/P1)
+  // ------------------------------------------------------------
   task automatic run_case_9b_mixed_id_ordering_p0p1();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
@@ -1049,6 +1019,8 @@ class axi_mm_corner_test extends uvm_test;
 
     logic [ADDR_WIDTH-1:0] p0_a, p0_b, p0_c;
     logic [ADDR_WIDTH-1:0] p1_a, p1_b, p1_c;
+
+    banner_case("9.2", "9B mixed-ID ordering P0/P1");
 
     p0_a = align_to_beat(WIN0_BASE + 32'h0200);
     p0_b = align_to_beat(WIN0_BASE + 32'h0300);
@@ -1099,10 +1071,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_item(mk_tr(1, p1_b, BURST_INCR, SIZE_8B, LEN_4B, RID_B, '0, '0, "C9B.P1.R_B", 0));
     seq1.push_item(mk_tr(1, p1_c, BURST_INCR, SIZE_8B, LEN_4B, RID_C, '0, '0, "C9B.P1.R_C", 0));
 
-    `uvm_info("CORNER_TEST",
-      $sformatf("[CASE_9B] Start: Mixed-ID ordering P0/P1 concurrent + post-write delay=%0t.",
-                POST_WRITE_DELAY),
-      UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", $sformatf("[CASE_9B] Start: Mixed-ID ordering P0/P1 concurrent + post-write delay=%0t.", POST_WRITE_DELAY), UVM_MEDIUM)
 
     fork
       begin seq0.start(env_h.p0_agent.seqr); end
@@ -1110,14 +1079,13 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_9B] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_9B] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 10: Reset During Activity (STABLE VERSION)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 10: Reset during activity
+  // ------------------------------------------------------------
   task automatic run_case_10_reset_during_activity();
-
     axi_mm_corner_step_seq seq0_a, seq1_a;
     axi_mm_corner_step_seq seq0_b, seq1_b;
     axi_mm_reset_seq rst_seq;
@@ -1141,6 +1109,8 @@ class axi_mm_corner_test extends uvm_test;
     logic [ADDR_WIDTH-1:0] p0_a, p0_b, p0_c, p0_d;
     logic [ADDR_WIDTH-1:0] p1_a, p1_b, p1_c, p1_d;
 
+    banner_case("10", "Reset during activity");
+
     p0_a = align_to_beat(WIN0_BASE + 32'h0200);
     p0_b = align_to_beat(WIN0_BASE + 32'h0300);
     p0_c = align_to_beat(WIN0_BASE + 32'h0400);
@@ -1151,7 +1121,7 @@ class axi_mm_corner_test extends uvm_test;
     p1_c = align_to_beat(WIN1_BASE + 32'h0400);
     p1_d = align_to_beat(WIN1_BASE + 32'h0500);
 
-    // Phase A (fire and forget)
+    // Phase A (Reset)
     seq0_a = axi_mm_corner_step_seq::type_id::create("C10_seq0_A");
     seq1_a = axi_mm_corner_step_seq::type_id::create("C10_seq1_A");
 
@@ -1165,9 +1135,7 @@ class axi_mm_corner_test extends uvm_test;
     seq1_a.push_item(mk_wr_burst(p1_c, BURST_INCR, SIZE_8B, LEN_A, WID3, 64'hC10A_1C00_0000_0000, WSTRB_ALL));
     seq1_a.push_item(mk_wr_burst(p1_d, BURST_INCR, SIZE_8B, LEN_A, WID4, 64'hC10A_1D00_0000_0000, WSTRB_ALL));
 
-    `uvm_info("CORNER_TEST",
-        "[CASE_10] Phase A start (no stop, reset will abort driver)",
-        UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_10] Phase A start", UVM_MEDIUM)
 
     fork
       seq0_a.start(env_h.p0_agent.seqr);
@@ -1176,25 +1144,22 @@ class axi_mm_corner_test extends uvm_test;
 
     #400ns;
 
-    `uvm_info("CORNER_TEST",
-        "[CASE_10] *** MID-FLIGHT RESET ASSERT ***",
-        UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_10] MID-FLIGHT RESET ASSERT!", UVM_MEDIUM)
 
     rst_seq = axi_mm_reset_seq::type_id::create("case10_mid_reset");
     rst_seq.assert_cycles   = 50;
     rst_seq.deassert_cycles = 10;
     rst_seq.start(env_h.rst_agent.seqr);
 
-    // wait for monitor ignore window + scoreboard resume
+    // Wait for monitor ignore window + scoreboard resume
     #(POST_RESET_DELAY);
 
-    `uvm_info("CORNER_TEST",
-        "[CASE_10] Phase B start (post-reset verify)",
-        UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_10] Phase B start", UVM_MEDIUM)
 
     seq0_b = axi_mm_corner_step_seq::type_id::create("C10_seq0_B");
     seq1_b = axi_mm_corner_step_seq::type_id::create("C10_seq1_B");
 
+    // Phase B (Post reest verification)
     seq0_b.push_item(mk_wr_burst(p0_a, BURST_INCR, SIZE_8B, LEN_B, WID1, 64'hC10B_0A00_0000_0000, WSTRB_ALL));
     seq0_b.push_delay(POST_WRITE_DELAY);
     seq0_b.push_item(mk_tr(1, p0_a, BURST_INCR, SIZE_8B, LEN_B, RID_A, '0, '0, "C10B.P0.R_A", 0));
@@ -1209,20 +1174,23 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST","[CASE_10] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST","[CASE_10] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 11 - MAX legal burst length (LEN=255)
-  // ============================================================
+  // ------------------------------------------------------------
+  // Case 11: MAX legal burst length (LEN=255)
+  // ------------------------------------------------------------
   task automatic run_case_11_max_len_burst();
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
 
     logic [ADDR_WIDTH-1:0] p0_addr, p1_addr;
+
     localparam logic [1:0] BURST_INCR = 2'b01;
     localparam logic [2:0] SIZE_8B    = 3'd3;
     localparam logic [7:0] LEN_MAX    = 8'd255;
+
+    banner_case("11", "MAX INCR burst write/read (LEN=255)");
 
     p0_addr = align_to_beat(WIN0_BASE + 32'h0400);
     p1_addr = align_to_beat(WIN1_BASE + 32'h0400);
@@ -1238,25 +1206,19 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, p1_addr, BURST_INCR, SIZE_8B, LEN_MAX, 4'h4, '0, '0, "C11.P1.R.MAXLEN", 0));
 
-    banner_case("11", "MAX LEN=255 INCR burst write/read (with post-write delay)");
-
     fork
       seq0.start(env_h.p0_agent.seqr);
       begin #1ns; seq1.start(env_h.p1_agent.seqr); end
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_11] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_11] Done", UVM_MEDIUM)
   endtask
 
-  // ============================================================
-  // Case 12 / 13 / 14
-  // - Case12/13 already have lots of ops; we only add one delay before final reads
-  // ============================================================
-
+  // ------------------------------------------------------------
+  // Case 12: Narrow sizes lane mapping + merge
+  // ------------------------------------------------------------
   task automatic run_case_12_narrow_sizes();
-    // Keep your original content mostly intact,
-    // but switch to step-seq so we can insert delays before key reads.
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
 
@@ -1264,6 +1226,8 @@ class axi_mm_corner_test extends uvm_test;
     logic [DATA_WIDTH-1:0] seed0, seed1;
     logic [DATA_WIDTH-1:0] wdata;
     logic [BYTES_PER_BEAT-1:0] wmask;
+
+    banner_case("12", "Narrow sizes lane mapping + merge");
 
     base0 = align_to_beat(WIN0_BASE + 32'h0700);
     base1 = align_to_beat(WIN1_BASE + 32'h0700);
@@ -1274,9 +1238,7 @@ class axi_mm_corner_test extends uvm_test;
     seed0 = 64'h1212_3434_5656_7878;
     seed1 = seed0 ^ 64'hFFFF_0000_FFFF_0000;
 
-    banner_case("12", "Narrow sizes (1B/2B/4B) lane mapping + merge (with strategic delays)");
-
-    // ---------------- P0 ----------------
+    // P0
     seq0.push_item(mk_tr(0, base0, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF, seed0, "C12.P0.SEED.FULL8B"));
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0, "C12.P0.R.SEED"));
@@ -1286,7 +1248,6 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h4, '0, '0, "C12.P0.R.AFTER1B@0"));
 
-    // (rest kept same pattern, but insert a delay before each read)
     wmask = 8'b0000_1000; wdata = 64'h0000_0000_AA00_0000;
     seq0.push_item(mk_tr(0, base0, 2'b01, 3'd0, 8'd0, 4'h5, wmask, wdata, "C12.P0.W.1B@3"));
     seq0.push_delay(POST_WRITE_DELAY);
@@ -1317,7 +1278,7 @@ class axi_mm_corner_test extends uvm_test;
     seq0.push_delay(POST_WRITE_DELAY);
     seq0.push_item(mk_tr(1, base0, 2'b01, 3'd3, 8'd0, 4'h0, '0, '0, "C12.P0.R.AFTER4B@4"));
 
-    // ---------------- P1 ----------------
+    // P1
     seq1.push_item(mk_tr(0, base1, 2'b01, 3'd3, 8'd0, 4'h1, 8'hFF, seed1, "C12.P1.SEED.FULL8B"));
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, base1, 2'b01, 3'd3, 8'd0, 4'h2, '0, '0, "C12.P1.R.SEED"));
@@ -1353,14 +1314,20 @@ class axi_mm_corner_test extends uvm_test;
     join
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_12] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_12] Done", UVM_MEDIUM)
   endtask
 
+  // ------------------------------------------------------------
+  // Case 13: Ready backpressure
+  // ------------------------------------------------------------
   task automatic run_case_13_ready_backpressure_stress();
+
     axi_mm_corner_step_seq seq0;
     axi_mm_corner_step_seq seq1;
 
     logic [ADDR_WIDTH-1:0] a0, a1;
+
+    banner_case("13", "READY backpressure");
 
     a0 = align_to_beat(WIN0_BASE + 32'h0900);
     a1 = align_to_beat(WIN1_BASE + 32'h0900);
@@ -1382,8 +1349,6 @@ class axi_mm_corner_test extends uvm_test;
     seq1.push_delay(POST_WRITE_DELAY);
     seq1.push_item(mk_tr(1, a1+32'h20, 2'b01, 3'd3, 8'd0, 4'h8, '0, '0, "C13.P1.R.FIXED_LAST", 0));
 
-    banner_case("13", "READY backpressure + (optional) stress");
-
     cfg_driver_hold_ready(0, 0);
     cfg_driver_stress_on();
 
@@ -1396,61 +1361,36 @@ class axi_mm_corner_test extends uvm_test;
     cfg_driver_hold_ready(1, 1);
 
     #200ns;
-    `uvm_info("CORNER_TEST", "[CASE_13] Done.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_13] Done", UVM_MEDIUM)
   endtask
 
+  // ------------------------------------------------------------
+  // Case 14: Completion suite
+  // ------------------------------------------------------------
   task automatic run_case_14_corner_completion_suite();
     axi_mm_corner_step_seq seq_sanity0, seq_sanity1;
+
     logic [ADDR_WIDTH-1:0] a0, a1;
 
-    banner_case("14", "CORNER COMPLETION SUITE (run all required cases once)");
+    banner_case("14", "Complete regression");
 
     cfg_driver_stress_off();
     cfg_driver_hold_ready(1, 1);
 
-    banner_case("1", "LEN=0 single-beat (INCR/FIXED) + WSTRB");
     run_case_1_single_beat();
-
-    banner_case("2", "Boundary crossing + end-of-window");
     run_case_2_boundary_edges();
-
-    banner_case("3", "Ordering + merge (per-window)");
     run_case_3_ordering_and_conflict();
-
-    banner_case("4", "AW/AR contention overlap");
     run_case_4_aw_ar_contention();
-
-    banner_case("5", "WRAP(4beat) edges + FIXED last-wins");
     run_case_5_wrap_fixed();
-
-    banner_case("6", "WRAP(8beat) edges");
     run_case_6_wrap_edges();
-
-    banner_case("7", "WSTRB patterns");
     run_case_7_wstrb_patterns();
-
-    banner_case("8.1", "8A depth1-friendly split AW/W");
     run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
-
-    banner_case("8.2", "8B outstanding + reverse B_WAIT");
     run_case_8b_outstanding_ooo_b_p0p1();
-
-    banner_case("9.1", "9A mixed-ID ordering P0");
     run_case_9a_mixed_id_ordering_p0();
-
-    banner_case("9.2", "9B mixed-ID ordering P0/P1");
     run_case_9b_mixed_id_ordering_p0p1();
-
-    banner_case("10", "Reset during activity");
     run_case_10_reset_during_activity();
-
-    banner_case("11", "MAX LEN=255 INCR burst write/read");
     run_case_11_max_len_burst();
-
-    banner_case("12", "Narrow sizes lane mapping + merge");
     run_case_12_narrow_sizes();
-
-    banner_case("13", "READY backpressure");
     run_case_13_ready_backpressure_stress();
 
     cfg_driver_stress_off();
@@ -1477,47 +1417,39 @@ class axi_mm_corner_test extends uvm_test;
 
     #300ns;
 
-    `uvm_info("CORNER_TEST",
-              "[CASE_14] Completion suite finished. If scoreboard FINAL RESULT is PASS => CORNER TEST COMPLETE.",
-              UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "[CASE_14] Done", UVM_MEDIUM)
   endtask
 
   // ------------------------------------------------------------
-  // Run phase: corner-case traffic
+  // Run phase
   // ------------------------------------------------------------
   virtual task run_phase(uvm_phase phase);
     phase.raise_objection(this);
 
-    `uvm_info("CORNER_TEST", "Starting AXI-MM corner-case transaction test", UVM_MEDIUM)
-
-    // `uvm_info("CORNER_TEST", "Initial reset done, start traffic.", UVM_MEDIUM)
+    `uvm_info("CORNER_TEST", "Starting AXI-MM Corner Test", UVM_MEDIUM)
 
     cfg_driver_stress_off();
     cfg_driver_hold_ready(1, 1);
 
-    if (case_enabled("1"))   begin banner_case("1",   "LEN=0 single-beat (INCR/FIXED) + WSTRB");              run_case_1_single_beat(); end
-    if (case_enabled("2"))   begin banner_case("2",   "Boundary crossing + end-of-window");                   run_case_2_boundary_edges(); end
-    if (case_enabled("3"))   begin banner_case("3",   "Ordering + partial merge (per-window)");               run_case_3_ordering_and_conflict(); end
-    if (case_enabled("4"))   begin banner_case("4",   "AW/AR contention overlap");                            run_case_4_aw_ar_contention(); end
-    if (case_enabled("5"))   begin banner_case("5",   "WRAP(4beat) edges + FIXED last-wins");                 run_case_5_wrap_fixed(); end
-    if (case_enabled("6"))   begin banner_case("6",   "WRAP(8beat) edges");                                   run_case_6_wrap_edges(); end
-    if (case_enabled("7"))   begin banner_case("7",   "WSTRB patterns");                                      run_case_7_wstrb_patterns(); end
+    if (case_enabled("1"))   run_case_1_single_beat();
+    if (case_enabled("2"))   run_case_2_boundary_edges();
+    if (case_enabled("3"))   run_case_3_ordering_and_conflict();
+    if (case_enabled("4"))   run_case_4_aw_ar_contention();
+    if (case_enabled("5"))   run_case_5_wrap_fixed();
+    if (case_enabled("6"))   run_case_6_wrap_edges();
+    if (case_enabled("7"))   run_case_7_wstrb_patterns();
+    if (case_enabled("8"))   run_case_8_outstanding_aw_depth4_p0p1();
+    if (case_enabled("8.1")) run_case_8a_multi_aw_no_interleave_fixed_for_depth1();
+    if (case_enabled("8.2")) run_case_8b_outstanding_ooo_b_p0p1();
+    if (case_enabled("9.1")) run_case_9a_mixed_id_ordering_p0();
+    if (case_enabled("9.2")) run_case_9b_mixed_id_ordering_p0p1();
+    if (case_enabled("10"))  run_case_10_reset_during_activity();
+    if (case_enabled("11"))  run_case_11_max_len_burst();
+    if (case_enabled("12"))  run_case_12_narrow_sizes();
+    if (case_enabled("13"))  run_case_13_ready_backpressure_stress();
+    if (case_enabled("14"))  run_case_14_corner_completion_suite();
 
-    if (case_enabled("8"))   begin banner_case("8",   "Outstanding AW depth4 + observable stall");            run_case_8_outstanding_aw_depth4_p0p1(); end
-    if (case_enabled("8.1")) begin banner_case("8.1", "8A depth1-friendly split AW/W");                       run_case_8a_multi_aw_no_interleave_fixed_for_depth1(); end
-    if (case_enabled("8.2")) begin banner_case("8.2", "8B outstanding + reverse B_WAIT");                     run_case_8b_outstanding_ooo_b_p0p1(); end
-
-    if (case_enabled("9.1")) begin banner_case("9.1", "9A mixed-ID ordering P0");                             run_case_9a_mixed_id_ordering_p0(); end
-    if (case_enabled("9.2")) begin banner_case("9.2", "9B mixed-ID ordering P0/P1");                          run_case_9b_mixed_id_ordering_p0p1(); end
-
-    if (case_enabled("10"))  begin banner_case("10",  "Reset during activity");                               run_case_10_reset_during_activity(); end
-    if (case_enabled("11"))  begin banner_case("11",  "MAX LEN=255 INCR burst write/read");                   run_case_11_max_len_burst(); end
-    if (case_enabled("12"))  begin banner_case("12",  "Narrow sizes lane mapping + merge");                   run_case_12_narrow_sizes(); end
-    if (case_enabled("13"))  begin banner_case("13",  "READY backpressure");                                  run_case_13_ready_backpressure_stress(); end
-    if (case_enabled("14"))  begin banner_case("14",  "Complete regression");                                 run_case_14_corner_completion_suite(); end
-
-    `uvm_info("CORNER_TEST", "Corner-case transaction test completed", UVM_MEDIUM)
-
+    `uvm_info("CORNER_TEST", "Corner Test completed", UVM_MEDIUM)
     phase.drop_objection(this);
   endtask
 
