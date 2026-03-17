@@ -7,7 +7,7 @@ interface axi_mm_commit_if #(
     parameter int ADDR_WIDTH = 32,
     parameter int DATA_WIDTH = 64,
     parameter int ID_WIDTH   = 4,
-    parameter int BEAT_IDX_W = 8   // enough for AWLEN up to 255 beats
+    parameter int BEAT_IDX_W = 8   
 )(
     input logic clk,
     input logic rst_n
@@ -17,30 +17,26 @@ interface axi_mm_commit_if #(
     localparam int unsigned STRBW = (DATA_WIDTH/8);
 
     // ------------------------------------------------------------
-    // Commit stream (1 beat per handshake)
-    // valid/ready asserted when a beat is committed to memory model
-    //
-    // NOTE:
+    // Commit stream
+    // valid/ready asserted when a beat is committed to mem
     // - valid/payload are driven by DUT (mp_producer)
     // - ready is driven by TB monitor/consumer (mp_monitor)
-    // - interface itself does not "init" these; TB/DUT own them.
     // ------------------------------------------------------------
     logic                  valid;
     logic                  ready;
 
     logic                  port;        // 0: axi0 / 1: axi1
     logic [IDW-1:0]        id;          // burst ID
-    logic [BEAT_IDX_W-1:0] beat_idx;    // beat index within burst (debug)
+    logic [BEAT_IDX_W-1:0] beat_idx;    // beat index within burst
     logic [ADDR_WIDTH-1:0] byte_addr;   // byte address of this beat
     logic [DATA_WIDTH-1:0] wdata;       // full data bus
     logic [STRBW-1:0]      wstrb;       // byte enables
-    logic [2:0]            size;        // AXI size (bytes = 1<<size)
-    logic                  last;        // last beat of burst commit
+    logic [2:0]            size;        // AXI size
+    logic                  last;        // last beat
 
     // ------------------------------------------------------------
     // Clocking blocks
     // ------------------------------------------------------------
-    // Producer (DUT) drives payload + valid, samples ready
     clocking cb_producer @(posedge clk);
         default input #1step output #0;
         input  rst_n;
@@ -56,7 +52,7 @@ interface axi_mm_commit_if #(
         output ready;
     endclocking
 
-    // ------------------------------------------------------------
+    // ------------------------------------------------------------   
     // Modports
     // ------------------------------------------------------------
     modport mp_producer (
