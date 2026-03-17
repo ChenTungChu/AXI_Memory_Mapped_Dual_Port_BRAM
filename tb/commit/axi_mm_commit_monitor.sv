@@ -14,35 +14,35 @@ class axi_mm_commit_monitor #(
 
     `uvm_component_param_utils(axi_mm_commit_monitor#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W))
 
-    // ------------------------------------------------------------
-    // virtual interface (MODPORT)
-    // ------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // Virtual interface (modport)
+    // ----------------------------------------------------------------
     virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W).mp_monitor vif;
 
     // analysis port -> scoreboard
     uvm_analysis_port #(axi_mm_commit_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W)) ap;
 
-    // behavior knobs
-    bit          drive_ready_always = 1;   // legacy: ready always 1 (no backpressure)
+    // knobs
+    bit          drive_ready_always = 1;   // no backpressure
 
     // backpressure knobs
-    bit          stress_enable      = 0;   // when 1, ready is controlled by probability
-    int unsigned ready_prob         = 100; // 0..100 (only used when stress_enable=1)
-    int unsigned force_ready_after  = 64;  // after N cycles, force ready=1 (safety)
+    bit          stress_enable      = 0;   //
+    int unsigned ready_prob         = 100; // 0..100 (stress_enable=1)
+    int unsigned force_ready_after  = 64;  // Force ready=1 after N cycles
 
-    // Optional: initial holdoff
+    // Initial holdoff
     int unsigned ready_holdoff_cycles = 0; // hold ready low for first N cycles after reset deassert
 
-    // ------------------------------------------------------------
-    // helpers
-    // ------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // Helper functions
+    // ----------------------------------------------------------------
     function automatic bit roll_prob(int unsigned prob_0_to_100);
         if (prob_0_to_100 >= 100) return 1;
         if (prob_0_to_100 == 0)   return 0;
         return ($urandom_range(0,99) < prob_0_to_100);
     endfunction
 
-    // Compute the next value to drive on ready.
+    // Compute next value to drive on ready
     function automatic bit compute_ready_next(int unsigned cyc_since_reset);
         bit r;
 
@@ -50,16 +50,16 @@ class axi_mm_commit_monitor #(
             r = 1'b1;
         end
         else begin
-            // holdoff window (optional)
+            // Holdoff window
             if (cyc_since_reset <= ready_holdoff_cycles) begin
                 r = 1'b0;
             end
             else if (!stress_enable) begin
-                // if not stress, default to ready=1 (unless holdoff)
+                // If not stress -> ready=1
                 r = 1'b1;
             end
             else begin
-                // stress mode probability + safety escape
+                // Stress mode probability + safety escape
                 if (cyc_since_reset >= force_ready_after) r = 1'b1;
                 else                                      r = roll_prob(ready_prob);
             end
@@ -68,18 +68,22 @@ class axi_mm_commit_monitor #(
         return r;
     endfunction
 
+    // ------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------
     function new(string name, uvm_component parent);
         super.new(name, parent);
         ap = new("ap", this);
     endfunction
 
+    // ------------------------------------------------------------
+    // Build phase
+    // ------------------------------------------------------------
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
 
-        if (!uvm_config_db#(
-                virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W).mp_monitor
-            )::get(this, "", "vif", vif)) begin
-            `uvm_fatal("COMMIT_MON", "No virtual interface set for axi_mm_commit_monitor (config_db key: 'vif')")
+        if (!uvm_config_db#(virtual axi_mm_commit_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W).mp_monitor)::get(this, "", "vif", vif)) begin
+            `uvm_fatal("COMMIT_MON", "No virtual interface set for commit_monitor")
         end
 
         void'(uvm_config_db#(bit         )::get(this, "", "drive_ready_always",    drive_ready_always));
@@ -91,43 +95,41 @@ class axi_mm_commit_monitor #(
         if (ready_prob > 100) ready_prob = 100;
     endfunction
 
+    // ------------------------------------------------------------
+    // Run phase
+    // ------------------------------------------------------------
     task run_phase(uvm_phase phase);
         axi_mm_commit_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W) it;
 
         int unsigned cyc_since_reset;
 
-        // ready_cur = "current effective ready for this cycle"
-        // ready_next = "what we will drive to take effect next cycle"
-        bit ready_cur;
-        bit ready_next;
+        bit ready_cur;  // Current effective ready for this cycle
+        bit ready_next; // Drive for next cycle
 
         cyc_since_reset = 0;
 
         `uvm_info("COMMIT_MON", "Commit monitor started", UVM_LOW)
 
-        // Drive an initial value before the first clocking event.
-        // Also initialize ready_cur to match what will be effective at the first sample.
+        // Drive an initial value before the first clocking event
+        // Initialize ready_cur to match what will be effective at the first sample
         ready_cur = (drive_ready_always ? 1'b1 : 1'b0);
         vif.cb_monitor.ready <= ready_cur;
 
         forever begin
             @(vif.cb_monitor);
 
-            // During reset: keep ready low, reset counter
+            // Reset
             if (!vif.cb_monitor.rst_n) begin
-                cyc_since_reset = 0;
-                ready_cur  = 1'b0;
-                ready_next = 1'b0;
+                cyc_since_reset      = 0;
+                ready_cur            = 1'b0;
+                ready_next           = 1'b0;
                 vif.cb_monitor.ready <= 1'b0;
                 continue;
             end
 
-            // ------------------------------------------------------------
-            // 1) Observe REAL handshake for THIS cycle using ready_cur
-            //    (ready_cur is what was driven previously and is effective now)
-            // ------------------------------------------------------------
+            // 1. Observe handshake for this cycle using ready_cur
             if (vif.cb_monitor.valid && ready_cur) begin
-                it = axi_mm_commit_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W)::type_id::create("it");
+                it             = axi_mm_commit_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W)::type_id::create("it");
                 it.commit_time = $time;
                 it.port        = vif.cb_monitor.port;
                 it.id          = vif.cb_monitor.id;
@@ -143,15 +145,13 @@ class axi_mm_commit_monitor #(
                 `uvm_info("COMMIT_MON", it.convert2string(), UVM_HIGH)
             end
 
-            // ------------------------------------------------------------
-            // 2) Compute + drive next ready (effective next cycle)
-            // ------------------------------------------------------------
+            // 2. Compute + drive next ready
             cyc_since_reset++;
             ready_next = compute_ready_next(cyc_since_reset);
 
             vif.cb_monitor.ready <= ready_next;
 
-            // 3) Update ready_cur for next loop
+            // 3. Update ready_cur for next loop
             ready_cur = ready_next;
         end
     endtask
