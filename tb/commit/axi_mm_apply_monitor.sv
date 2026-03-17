@@ -1,3 +1,4 @@
+// File: tb/commit/axi_mm_apply_monitor.sv
 `ifndef AXI_MM_APPLY_MONITOR_SV
 `define AXI_MM_APPLY_MONITOR_SV
 
@@ -53,18 +54,22 @@ class axi_mm_apply_monitor #(
         return r;
     endfunction
 
+    // ------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------
     function new(string name, uvm_component parent);
         super.new(name, parent);
         ap = new("ap", this);
     endfunction
 
+    // ------------------------------------------------------------
+    // Build phase
+    // ------------------------------------------------------------
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
 
-        if (!uvm_config_db#(
-                virtual axi_mm_apply_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W).mp_monitor
-            )::get(this, "", "vif", vif)) begin
-            `uvm_fatal("APPLY_MON", "No virtual interface set for axi_mm_apply_monitor (config_db key: 'vif')")
+        if (!uvm_config_db#(virtual axi_mm_apply_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, BEAT_IDX_W).mp_monitor)::get(this, "", "vif", vif)) begin
+            `uvm_fatal("APPLY_MON", "No virtual interface set for apply_monitor")
         end
 
         void'(uvm_config_db#(bit         )::get(this, "", "drive_ready_always",   drive_ready_always));
@@ -76,6 +81,9 @@ class axi_mm_apply_monitor #(
         if (ready_prob > 100) ready_prob = 100;
     endfunction
 
+    // ------------------------------------------------------------
+    // Run phase
+    // ------------------------------------------------------------
     task run_phase(uvm_phase phase);
         apply_t it;
 
