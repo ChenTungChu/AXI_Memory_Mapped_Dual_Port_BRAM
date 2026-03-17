@@ -128,7 +128,7 @@ class axi_mm_directed_test extends uvm_test;
 
         banner_case("0", "Single beat write/read");
 
-        // Write
+        // WRITE
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case0");
         wr_seq.directed_mode = 1;
         wr_seq.dir_rw        = AXI_WRITE;
@@ -139,7 +139,7 @@ class axi_mm_directed_test extends uvm_test;
         wr_seq.dir_wstrb     = 8'hFF;
         wr_seq.start(env_h.p0_agent.seqr);
 
-        // Read
+        // READ
         rd_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("rd_seq_case0");
         rd_seq.directed_mode = 1;
         rd_seq.dir_rw        = AXI_READ;
@@ -235,7 +235,7 @@ class axi_mm_directed_test extends uvm_test;
 
         addr = 32'h0000_0400;
 
-        // 1) baseline full write
+        // 1. Baseline full write
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case3_1_full");
         wr_seq.directed_mode = 1;
         wr_seq.dir_rw        = AXI_WRITE;
@@ -248,7 +248,7 @@ class axi_mm_directed_test extends uvm_test;
         wr_seq.dir_wstrb     = 8'hFF;
         wr_seq.start(env_h.p0_agent.seqr);
 
-        // 2) partial write (low 2 bytes)
+        // 2. Partial write (low 2 bytes)
         wr_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("wr_seq_case3_1_part");
         wr_seq.directed_mode = 1;
         wr_seq.dir_rw        = AXI_WRITE;
@@ -261,7 +261,7 @@ class axi_mm_directed_test extends uvm_test;
         wr_seq.dir_wstrb     = 8'b0000_0011;
         wr_seq.start(env_h.p0_agent.seqr);
 
-        // 3) read back
+        // 3. Read back
         rd_seq = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("rd_seq_case3_1");
         rd_seq.directed_mode = 1;
         rd_seq.dir_rw        = AXI_READ;
@@ -428,7 +428,7 @@ class axi_mm_directed_test extends uvm_test;
         a3 = 32'h0000_0580;
         a4 = 32'h0000_05C0;
 
-        // [4.1] INCR 4 beats
+        // 4.1 INCR 4 beats
         p0_wr_4_1 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_1");
         p0_wr_4_1.directed_mode = 1;
         p0_wr_4_1.dir_rw        = AXI_WRITE;
@@ -452,7 +452,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_1.start(env_h.p0_agent.seqr);
         p0_rd_4_1.start(env_h.p0_agent.seqr);
 
-        // [4.2] WRAP 4 beats
+        // 4.2 WRAP 4 beats
         p0_wr_4_2 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_2");
         p0_wr_4_2.directed_mode = 1;
         p0_wr_4_2.dir_rw        = AXI_WRITE;
@@ -476,7 +476,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_2.start(env_h.p0_agent.seqr);
         p0_rd_4_2.start(env_h.p0_agent.seqr);
 
-        // [4.3] FIXED burst overwrite, read 1 beat
+        // 4.3 FIXED burst overwrite, read 1 beat
         p0_wr_4_3 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_3");
         p0_wr_4_3.directed_mode = 1;
         p0_wr_4_3.dir_rw        = AXI_WRITE;
@@ -500,7 +500,7 @@ class axi_mm_directed_test extends uvm_test;
         p0_wr_4_3.start(env_h.p0_agent.seqr);
         p0_rd_4_3.start(env_h.p0_agent.seqr);
 
-        // [4.4] Cross-port coherence INCR burst
+        // 4.4 Cross-port coherence INCR burst
         p0_wr_4_4 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case4_4");
         p0_wr_4_4.directed_mode = 1;
         p0_wr_4_4.dir_rw        = AXI_WRITE;
@@ -784,7 +784,7 @@ class axi_mm_directed_test extends uvm_test;
             `uvm_fatal("DIRECTED_TEST", "env_h.commit_mon is null")
 
 
-        // 1) Program commit monitor to HOLD ready LOW (no hdl_force)
+        // 1. Program commit monitor to HOLD ready LOW (no hdl_force)
         orig_drive_ready_always  = env_h.commit_mon.drive_ready_always;
         orig_stress_enable       = env_h.commit_mon.stress_enable;
         orig_ready_prob          = env_h.commit_mon.ready_prob;
@@ -797,7 +797,7 @@ class axi_mm_directed_test extends uvm_test;
         env_h.commit_mon.force_ready_after    = stall_cycles + 1000; // prevent auto-1
         env_h.commit_mon.ready_holdoff_cycles = 0;
 
-        // 2) Issue multiple writes that require commit to progress
+        // 2. Issue multiple writes that require commit to progress
         wr0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case6_1_0");
         wr0.directed_mode = 1;
         wr0.dir_rw        = AXI_WRITE;
@@ -831,7 +831,7 @@ class axi_mm_directed_test extends uvm_test;
         wr2.dir_wdata     = 64'h6300_0000_0000_0000;
         wr2.dir_wstrb     = 8'hFF;
 
-        // 3) Run writes + release thread in parallel
+        // 3. Run writes + release thread in parallel
         fork
             begin
                 wr0.start(env_h.p0_agent.seqr);
@@ -858,7 +858,7 @@ class axi_mm_directed_test extends uvm_test;
             end
         join
 
-        // 4) Read back to confirm no deadlock + data is visible
+        // 4. Read back to confirm no deadlock + data is visible
         rd = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_rd_case6_1");
         rd.directed_mode = 1;
         rd.dir_rw        = AXI_READ;
@@ -896,7 +896,7 @@ class axi_mm_directed_test extends uvm_test;
 
         banner_case("6.2", "Stall P0 BREADY while issuing multiple write bursts");
 
-        // 0) Make sure driver exists + fetch vif for cycle wait
+        // 0. Make sure driver exists + fetch vif for cycle wait
         if (env_h.p0_agent == null || env_h.p0_agent.drv == null)
             `uvm_fatal("DIRECT_TEST", "env_h.p0_agent.drv is null")
 
@@ -908,7 +908,7 @@ class axi_mm_directed_test extends uvm_test;
         // Align to a clean edge
         @(p0_vif.cb_master);
 
-        // 1) Program driver to HOLD bready LOW
+        // 1. Program driver to HOLD bready LOW
         orig_hold_bready_high  = env_h.p0_agent.drv.hold_bready_high;
         orig_stress_enable     = env_h.p0_agent.drv.stress_enable;
         orig_bready_prob       = env_h.p0_agent.drv.bready_prob;
@@ -921,7 +921,7 @@ class axi_mm_directed_test extends uvm_test;
 
         `uvm_info("DIRECT_TEST", $sformatf("Case 6.2: Applied bready stall knobs (prob=0) for %0d dma cycles", stall_cycles), UVM_MEDIUM)
 
-        // 2) Prepare 3 contiguous 4-beat INCR bursts
+        // 2. Prepare 3 contiguous 4-beat INCR bursts
         wr0 = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_wr_case6_2_0");
         wr0.directed_mode = 1;
         wr0.dir_rw        = AXI_WRITE;
@@ -955,7 +955,7 @@ class axi_mm_directed_test extends uvm_test;
         wr2.dir_wdata     = 64'h8400_0000_0000_0000;
         wr2.dir_wstrb     = 8'hFF;
 
-        // 3) Launch writes while bready is stuck low
+        // 3. Launch writes while bready is stuck low
         fork
             begin
                 wr0.start(env_h.p0_agent.seqr);
@@ -982,7 +982,7 @@ class axi_mm_directed_test extends uvm_test;
             end
         join
 
-        // 4) Read back exactly the written region (3 bursts * 4 beats = 12 beats)
+        // 4. Read back exactly the written region (3 bursts * 4 beats = 12 beats)
         rd = axi_mm_seq#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("p0_rd_case6_2");
         rd.directed_mode = 1;
         rd.dir_rw        = AXI_READ;
