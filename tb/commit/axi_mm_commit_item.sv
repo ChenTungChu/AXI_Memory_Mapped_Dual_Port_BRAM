@@ -5,8 +5,7 @@
 import uvm_pkg::*;
 `include "uvm_macros.svh"
 
-// Commit beat item: 以 commit_if 的 valid/ready handshake 為準，
-// 用於 scoreboard 做「可視化時間點」(commit_time) 的 byte-level 更新。
+// Commit item
 class axi_mm_commit_item #(
     int ADDR_WIDTH = 32,
     int DATA_WIDTH = 64,
@@ -21,15 +20,13 @@ class axi_mm_commit_item #(
     // ----------------------------------------------------------------
     // Fields sampled at commit_if handshake
     // ----------------------------------------------------------------
-    // NOTE: port is intended to be 0/1. If your design later makes it wider,
-    //       update this item + scoreboard accordingly (avoid silent truncation).
-    logic                  port;       // 0/1
+    logic                  port;       // 0 / 1
     logic [IDW-1:0]        id;
     logic [BEAT_IDX_W-1:0] beat_idx;
-    logic [ADDR_WIDTH-1:0] byte_addr;  // beat base address in BYTES
+    logic [ADDR_WIDTH-1:0] byte_addr;  // Beat base address in BYTES
     logic [DATA_WIDTH-1:0] wdata;
     logic [STRBW-1:0]      wstrb;
-    logic [2:0]            size;       // log2(bytes) per AXI
+    logic [2:0]            size;       
     logic                  last;
 
     time                   commit_time;
@@ -46,14 +43,16 @@ class axi_mm_commit_item #(
         `uvm_field_int(wstrb,       UVM_DEFAULT)
         `uvm_field_int(size,        UVM_DEFAULT)
         `uvm_field_int(last,        UVM_DEFAULT)
-        // commit_time is 'time' (usually 64-bit). Treat as int field for print/copy/compare.
         `uvm_field_int(commit_time, UVM_DEFAULT)
     `uvm_object_utils_end
 
+    // ------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------
     function new(string name = "axi_mm_commit_item");
         super.new(name);
 
-        // Safe defaults (avoid X spam in logs)
+        // Default
         port        = 1'b0;
         id          = '0;
         beat_idx    = '0;
@@ -66,10 +65,7 @@ class axi_mm_commit_item #(
     endfunction
 
     function string convert2string();
-        return $sformatf(
-            "commit: t=%0t port=%0d id=0x%0h beat_idx=%0d addr=0x%0h data=0x%0h wstrb=0x%0h size=%0d last=%0d",
-            commit_time, int'(port), id, beat_idx, byte_addr, wdata, wstrb, size, last
-        );
+        return $sformatf("commit: t=%0t port=%0d id=0x%0h beat_idx=%0d addr=0x%0h data=0x%0h wstrb=0x%0h size=%0d last=%0d", commit_time, int'(port), id, beat_idx, byte_addr, wdata, wstrb, size, last);
     endfunction
 
 endclass : axi_mm_commit_item
