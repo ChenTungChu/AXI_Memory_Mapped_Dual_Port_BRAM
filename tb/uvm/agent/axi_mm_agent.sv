@@ -1,4 +1,4 @@
-// File: tb/uvm/axi_mm_agent.sv
+// File: tb/uvm/agent/axi_mm_agent.sv
 `ifndef AXI_MM_AGENT_SV
 `define AXI_MM_AGENT_SV
 
