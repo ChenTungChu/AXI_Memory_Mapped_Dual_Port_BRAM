@@ -22,7 +22,6 @@ interface axi_mm_if #(
     // ------------------------------------------------------------
     // AXI signals
     // ------------------------------------------------------------
-
     // Write address
     logic [IDW-1:0]        awid;
     logic [ADDR_WIDTH-1:0] awaddr;
@@ -62,28 +61,24 @@ interface axi_mm_if #(
     logic                  rvalid;
     logic                  rready;
 
-    // ============================================================
-    // Clocking blocks
-    // ============================================================
-
     // ------------------------------------------------------------
     // Driver clocking block (MASTER)
-    // - drives request channels
-    // - samples response channels + rst_n
+    // - Drives request channels
+    // - Samples response channels + rst_n
     // ------------------------------------------------------------
     clocking cb_master @(posedge clk);
         default input #1step output #0;
 
-        // sample reset
+        // Sample reset
         input rst_n;
 
-        // drive
+        // Drive
         output awid, awaddr, awlen, awsize, awburst, awvalid;
         output wdata, wstrb, wlast, wvalid;
         output arid, araddr, arlen, arsize, arburst, arvalid;
         output bready, rready;
 
-        // sample
+        // Sample
         input awready, wready;
         input bvalid, bresp, bid;
         input arready;
@@ -92,7 +87,6 @@ interface axi_mm_if #(
 
     // ------------------------------------------------------------
     // Monitor clocking block
-    // - ALL INPUTS
     // ------------------------------------------------------------
     clocking cb_monitor @(posedge clk);
         default input #1step;
@@ -107,14 +101,10 @@ interface axi_mm_if #(
         input rvalid, rready, rdata, rresp, rid, rlast;
     endclocking
 
-    // ============================================================
-    // Modports
-    // ============================================================
-
     // ------------------------------------------------------------
     // TB Driver (MASTER)
-    // - expose cb_master for synchronous driving
-    // - ALSO expose raw signals so TB can READ without cb-output warnings
+    // - Expose cb_master for synchronous driving
+    // - Expose raw signals so TB can READ without cb-output warnings
     // ------------------------------------------------------------
     modport mp_master (
         input  clk, rst_n,
@@ -139,8 +129,8 @@ interface axi_mm_if #(
 
     // ------------------------------------------------------------
     // TB Monitor
-    // - expose cb_monitor for sampling
-    // - ALSO expose raw signals (input-only) if monitor wants direct access
+    // - Expose cb_monitor for sampling
+    // - Expose raw signals if monitor wants direct access
     // ------------------------------------------------------------
     modport mp_monitor (
         input  clk, rst_n,
@@ -154,7 +144,7 @@ interface axi_mm_if #(
     );
 
     // ------------------------------------------------------------
-    // DUT (AXI slave)
+    // DUT (Slave)
     // ------------------------------------------------------------
     modport mp_slave (
         input  clk, rst_n,
