@@ -1,8 +1,4 @@
-// File: tb/uvm/cov/axi_mm_cov_sequence.sv
-
-//---------------------------------------------------------------------
-// Coverage Sequence for AXI-MM
-//---------------------------------------------------------------------
+// File: tb/uvm/cov/cov/axi_mm_cov_sequence.sv
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
