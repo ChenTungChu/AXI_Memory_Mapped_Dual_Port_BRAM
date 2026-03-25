@@ -1,3 +1,4 @@
+// File: tb/uvm/driver/axi_mm_driver.sv
 `ifndef AXI_MM_DRIVER_SV
 `define AXI_MM_DRIVER_SV
 
@@ -11,39 +12,34 @@ class axi_mm_driver #(
     int WAIT_TIMEOUT = 1000
 ) extends uvm_driver #(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH));
 
-    // IMPORTANT: your agent sets both "vif_m" and legacy "vif"
     virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master vif;
 
     `uvm_component_param_utils(axi_mm_driver #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, WAIT_TIMEOUT))
 
-    // ----------------------------
-    // knobs
-    // ----------------------------
-    bit hold_bready_high = 1;
-    bit hold_rready_high = 1;
+    // Knobs
+    bit          hold_bready_high     = 1;
+    bit          hold_rready_high     = 1;
 
-    bit stress_enable = 0;
-    int unsigned bready_prob = 100;
-    int unsigned rready_prob = 100;
+    bit          stress_enable        = 0;
+    int unsigned bready_prob          = 100;
+    int unsigned rready_prob          = 100;
 
-    int unsigned aw_pre_delay_max = 0;
-    int unsigned ar_pre_delay_max = 0;
+    int unsigned aw_pre_delay_max     = 0;
+    int unsigned ar_pre_delay_max     = 0;
 
-    bit          w_streaming_mode = 0; // NOTE: currently not used
-    int unsigned w_beat_gap_max   = 0;
+    bit          w_streaming_mode     = 0;
+    int unsigned w_beat_gap_max       = 0;
 
-    int unsigned force_ready_after = 64;
-    int unsigned stress_seed = 0;
+    int unsigned force_ready_after    = 64;
+    int unsigned stress_seed          = 0;
 
-    // align WDATA bytes into the lanes indicated by WSTRB
-    bit align_wdata_to_wstrb = 1'b1;
+    bit          align_wdata_to_wstrb = 1'b1;
 
-    // knob: enable strict checking for B consume
-    bit strict_consume_b = 1'b1;
+    bit          strict_consume_b     = 1'b1;    // Strict checking for B consume
 
-    // ----------------------------
-    // latches (debug)
-    // ----------------------------
+    // ------------------------------------------------------------
+    // Latches
+    // ------------------------------------------------------------
     logic [ADDR_WIDTH-1:0] aw_addr_lat;
     logic [7:0]            aw_len_lat;
     logic [2:0]            aw_size_lat;
@@ -56,71 +52,58 @@ class axi_mm_driver #(
     logic [1:0]            ar_burst_lat;
     logic [ID_WIDTH-1:0]   ar_id_lat;
 
-    // ----------------------------
-    // B response storage (by ID) - use int unsigned key for robustness
-    // ----------------------------
-    bit          b_seen       [int unsigned];
-    logic [1:0]  b_resp_store [int unsigned];
-    int unsigned b_count      [int unsigned];
+    // B response storage 
+    bit                    b_seen       [int unsigned];
+    logic [1:0]            b_resp_store [int unsigned];
+    int unsigned           b_count      [int unsigned];
 
-    // ------------------------------------------------------------
     // Generic reset/flush event interface
-    // ------------------------------------------------------------
-    uvm_event ev_reset_assert;
-    uvm_event ev_reset_deassert;
-    uvm_event ev_flush;
-    uvm_event ev_flush_done;
+    uvm_event              ev_reset_assert;
+    uvm_event              ev_reset_deassert;
+    uvm_event              ev_flush;
+    uvm_event              ev_flush_done;
 
-    // driver state
-    bit in_reset;
-    bit abort_drive;
-    bit in_flush;
+    // Driver state
+    bit                    in_reset;
+    bit                    abort_drive;
+    bit                    in_flush;
 
-    // track whether we currently own an outstanding request from sequencer
-    bit have_item;
+    bit                    have_item;
 
     // ------------------------------------------------------------
-    // ctor
+    // Constructor
     // ------------------------------------------------------------
     function new(string name, uvm_component parent);
         super.new(name, parent);
     endfunction
 
     // ------------------------------------------------------------
-    // build
+    // Build phase
     // ------------------------------------------------------------
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
 
-        // Prefer vif_m, fallback to vif (legacy)
-        if (!uvm_config_db#(
-                virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master
-            )::get(this, "", "vif_m", vif))
+        if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(this, "", "vif_m", vif))
         begin
-            if (!uvm_config_db#(
-                    virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master
-                )::get(this, "", "vif", vif))
+            if (!uvm_config_db#(virtual axi_mm_if#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master)::get(this, "", "vif", vif))
             begin
-                `uvm_fatal("NOVIF",
-                    $sformatf("axi_mm_driver: mp_master vif not set (keys tried: vif_m, vif). drv=%s",
-                              get_full_name()))
+                `uvm_fatal("NOVIF", $sformatf("Driver mp_master vif not set, drv=%s", get_full_name()))
             end
         end
 
-        void'(uvm_config_db#(bit)::get(this, "", "hold_bready_high", hold_bready_high));
-        void'(uvm_config_db#(bit)::get(this, "", "hold_rready_high", hold_rready_high));
-
-        void'(uvm_config_db#(bit)::get(this, "", "stress_enable", stress_enable));
+        void'(uvm_config_db#(bit         )::get(this, "", "hold_bready_high", hold_bready_high));
+        void'(uvm_config_db#(bit         )::get(this, "", "hold_rready_high", hold_rready_high));
+        void'(uvm_config_db#(bit         )::get(this, "", "stress_enable", stress_enable));
         void'(uvm_config_db#(int unsigned)::get(this, "", "bready_prob", bready_prob));
         void'(uvm_config_db#(int unsigned)::get(this, "", "rready_prob", rready_prob));
         void'(uvm_config_db#(int unsigned)::get(this, "", "aw_pre_delay_max", aw_pre_delay_max));
         void'(uvm_config_db#(int unsigned)::get(this, "", "ar_pre_delay_max", ar_pre_delay_max));
-        void'(uvm_config_db#(bit)::get(this, "", "w_streaming_mode", w_streaming_mode));
+        void'(uvm_config_db#(bit         )::get(this, "", "w_streaming_mode", w_streaming_mode));
         void'(uvm_config_db#(int unsigned)::get(this, "", "w_beat_gap_max", w_beat_gap_max));
         void'(uvm_config_db#(int unsigned)::get(this, "", "force_ready_after", force_ready_after));
         void'(uvm_config_db#(int unsigned)::get(this, "", "stress_seed", stress_seed));
-        void'(uvm_config_db#(bit)::get(this, "", "align_wdata_to_wstrb", align_wdata_to_wstrb));
-        void'(uvm_config_db#(bit)::get(this, "", "strict_consume_b", strict_consume_b));
+        void'(uvm_config_db#(bit         )::get(this, "", "align_wdata_to_wstrb", align_wdata_to_wstrb));
+        void'(uvm_config_db#(bit         )::get(this, "", "strict_consume_b", strict_consume_b));
 
         if (bready_prob > 100) bready_prob = 100;
         if (rready_prob > 100) rready_prob = 100;
@@ -130,14 +113,14 @@ class axi_mm_driver #(
         ev_flush          = uvm_event_pool::get_global("axi_mm_flush");
         ev_flush_done     = uvm_event_pool::get_global("axi_mm_flush_done");
 
-        in_reset    = 1'b0;
-        abort_drive = 1'b0;
-        in_flush    = 1'b0;
-        have_item   = 1'b0;
+        in_reset          = 1'b0;
+        abort_drive       = 1'b0;
+        in_flush          = 1'b0;
+        have_item         = 1'b0;
     endfunction
 
     // ------------------------------------------------------------
-    // helpers
+    // Helper functions
     // ------------------------------------------------------------
     function automatic int unsigned id_key(input logic [ID_WIDTH-1:0] id);
         return int'(id);
@@ -154,7 +137,7 @@ class axi_mm_driver #(
     function bit check_beats(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
         int beats = tr.len + 1;
         if (tr.rw == AXI_WRITE) begin
-            if (tr.wdata_beats.size()  != beats) return 0;
+            if (tr.wdata_beats.size() != beats) return 0;
             if (tr.wstrb_beats.size() != beats) return 0;
         end
         return 1;
@@ -192,7 +175,7 @@ class axi_mm_driver #(
         vif.cb_master.wdata   <= '0;
         vif.cb_master.wstrb   <= '0;
 
-        // during abort/reset/flush, hold ready low to avoid accidental handshakes
+        // Hold low during abort/reset/flush
         vif.cb_master.bready  <= 1'b0;
         vif.cb_master.rready  <= 1'b0;
     endtask
@@ -211,7 +194,7 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // stress helpers
+    // Stress helper functions
     // ------------------------------------------------------------
     function automatic bit roll_prob(int unsigned prob_0_to_100);
         if (prob_0_to_100 >= 100) return 1;
@@ -264,7 +247,8 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // Robust event wait: only accept triggers after t0
+    // Event wait
+    // - Only accept triggers after t0
     // ------------------------------------------------------------
     task automatic wait_event_after(uvm_event ev, time t0);
         time t;
@@ -278,8 +262,7 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // Drain sequencer safely during reset/flush
-    // FIX: use try_next_item() (UVM standard). No try_get_next_item in your UVM.
+    // Drain sequencer during reset/flush
     // ------------------------------------------------------------
     task automatic drain_sequencer_fifo(string why, int unsigned max_drain = 100000);
         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr_d;
@@ -293,22 +276,19 @@ class axi_mm_driver #(
 
             n++;
             `uvm_info("DRV_DRAIN",
-                $sformatf("Drain item (%s): rw=%0d op=%0d addr=0x%0h id=%0d (drain_cnt=%0d)",
-                          why, tr_d.rw, tr_d.op_kind, tr_d.addr, tr_d.id, n),
-                UVM_LOW)
+                $sformatf("Drain item (%s): rw=%0d op=%0d addr=0x%0h id=%0d drain_cnt=%0d", why, tr_d.rw, tr_d.op_kind, tr_d.addr, tr_d.id, n), UVM_LOW)
 
             seq_item_port.item_done();
 
             if (n >= max_drain) begin
-                `uvm_warning("DRV_DRAIN",
-                    $sformatf("Drain reached max_drain=%0d, stop draining (%s)", max_drain, why))
+                `uvm_warning("DRV_DRAIN", $sformatf("Drain reached max_drain=%0d, stop draining %s", max_drain, why))
                 break;
             end
         end
     endtask
 
     // ------------------------------------------------------------
-    // Reset/Flush subscribers
+    // Reset/flush subscribers
     // ------------------------------------------------------------
     task automatic reset_subscriber();
         time t_rst;
@@ -323,13 +303,11 @@ class axi_mm_driver #(
             drive_idle_abort();
             clear_driver_state("reset_assert");
 
-            `uvm_info("DRV_RST", "Got axi_mm_reset_assert -> abort_drive=1, in_reset=1", UVM_LOW)
-
+            `uvm_info("DRV_RST", "Reset asserted -> abort_drive=1, in_reset=1", UVM_LOW)
             wait_event_after(ev_reset_deassert, t_rst);
-            `uvm_info("DRV_RST", "Got axi_mm_reset_deassert (matched to last assert)", UVM_LOW)
+            `uvm_info("DRV_RST", "Reset deasserted", UVM_LOW)
 
             in_reset = 1'b0;
-            // NOTE: abort_drive is cleared by main loop once stable
         end
     endtask
 
@@ -346,18 +324,16 @@ class axi_mm_driver #(
             drive_idle_abort();
             clear_driver_state("flush_event");
 
-            `uvm_info("DRV_FLUSH", "Got axi_mm_flush -> abort_drive=1, in_flush=1", UVM_LOW)
-
+            `uvm_info("DRV_FLUSH", "Flushed -> abort_drive=1, in_flush=1", UVM_LOW)
             wait_event_after(ev_flush_done, t_flush);
+            `uvm_info("DRV_FLUSH", "Flush done", UVM_LOW)
 
             in_flush = 1'b0;
-            `uvm_info("DRV_FLUSH", "Got axi_mm_flush_done (matched to last flush)", UVM_LOW)
-            // NOTE: abort_drive is cleared by main loop once stable
         end
     endtask
 
     // ------------------------------------------------------------
-    // Background B collector
+    // B collector
     // ------------------------------------------------------------
     task automatic b_collector();
         int unsigned cyc;
@@ -375,7 +351,6 @@ class axi_mm_driver #(
                 continue;
             end
 
-            // FIX: bready is cb_master output => read vif.bready (net), not vif.cb_master.bready
             if ((vif.cb_master.bvalid === 1'b1) && (vif.bready === 1'b1)) begin
                 logic [ID_WIDTH-1:0] id_got;
                 logic [1:0]          resp_got;
@@ -391,10 +366,7 @@ class axi_mm_driver #(
                 b_resp_store[k] = resp_got;
                 b_seen[k]       = 1'b1;
 
-                `uvm_info("DRV_B",
-                    $sformatf("B_COLLECT: HS bid=%0d bresp=%0d (pending_count[%0d]=%0d)",
-                              int'(id_got), resp_got, int'(id_got), b_count[k]),
-                    UVM_HIGH)
+                `uvm_info("DRV_B", $sformatf("B_COLLECT: HS bid=%0d bresp=%0d pending_count[%0d]=%0d", int'(id_got), resp_got, int'(id_got), b_count[k]), UVM_HIGH)
             end
 
             cyc++;
@@ -403,7 +375,7 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // consume exactly one pending B for a given ID
+    // Consume exactly one pending B for a given ID
     // ------------------------------------------------------------
     task automatic consume_one_b(input logic [ID_WIDTH-1:0] bid);
         int unsigned k;
@@ -411,20 +383,14 @@ class axi_mm_driver #(
 
         if (!b_count.exists(k)) begin
             if (strict_consume_b) begin
-                `uvm_error("DRV_B",
-                    $sformatf("consume_one_b: b_count key NOT exist for ID=%0d (b_seen=%0b).",
-                              int'(bid),
-                              (b_seen.exists(k) ? b_seen[k] : 1'b0)))
+                `uvm_error("DRV_B", $sformatf("CONSUME_ONE_B: b_count key NOT exist for ID=%0d, b_seen=%0b", int'(bid), (b_seen.exists(k) ? b_seen[k] : 1'b0)))
             end
             return;
         end
 
         if (b_count[k] == 0) begin
             if (strict_consume_b) begin
-                `uvm_error("DRV_B",
-                    $sformatf("consume_one_b: b_count already 0 for ID=%0d (b_seen=%0b).",
-                              int'(bid),
-                              (b_seen.exists(k) ? b_seen[k] : 1'b0)))
+                `uvm_error("DRV_B", $sformatf("CONSUME_ONE_B: b_count already 0 for ID=%0d, b_seen=%0b", int'(bid), (b_seen.exists(k) ? b_seen[k] : 1'b0)))
             end
             return;
         end
@@ -432,14 +398,11 @@ class axi_mm_driver #(
         b_count[k]--;
         if (b_count[k] == 0) b_seen[k] = 1'b0;
 
-        `uvm_info("DRV_B",
-            $sformatf("consume_one_b: ID=%0d -> remaining b_count=%0d b_seen=%0b",
-                      int'(bid), b_count[k], b_seen[k]),
-            UVM_HIGH)
+        `uvm_info("DRV_B", $sformatf("CONSUME_ONE_B: ID=%0d -> remaining b_count=%0d b_seen=%0b", int'(bid), b_count[k], b_seen[k]), UVM_HIGH)
     endtask
 
     // ------------------------------------------------------------
-    // pack payload bytes into WDATA lanes indicated by WSTRB
+    // Pack payload bytes into WDATA lanes indicated by WSTRB
     // ------------------------------------------------------------
     function automatic logic [DATA_WIDTH-1:0] pack_wdata_by_wstrb(
         input logic [DATA_WIDTH-1:0] src_data,
@@ -497,10 +460,8 @@ class axi_mm_driver #(
                 return;
             end
 
-            // FIX: awvalid is cb_master output => read vif.awvalid, not vif.cb_master.awvalid
             if ((vif.awvalid === 1'b1) && (vif.cb_master.awready === 1'b1)) begin
-                aw_hs = 1;
-                // FIX: AW fields are cb_master outputs => read from vif.*
+                aw_hs        = 1;
                 aw_addr_lat  = vif.awaddr;
                 aw_len_lat   = vif.awlen;
                 aw_size_lat  = vif.awsize;
@@ -514,23 +475,19 @@ class axi_mm_driver #(
 
         if (!aw_hs) begin
             vif.cb_master.awvalid <= 1'b0;
-            `uvm_fatal("HS_TIMEOUT",
-                $sformatf("AW_ONLY TIMEOUT (%0d cycles). addr=0x%0h id=%0d",
-                          WAIT_TIMEOUT, tr.addr, tr.id))
+            `uvm_fatal("HS_TIMEOUT", $sformatf("AW_ONLY TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
     endtask
 
     // ------------------------------------------------------------
-    // OP_W_ONLY (len+1 beats)
+    // OP_W_ONLY
     // ------------------------------------------------------------
     task automatic drive_w_only(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
         int beats;
         beats = tr.len + 1;
 
         if (tr.wdata_beats.size() != beats || tr.wstrb_beats.size() != beats) begin
-            `uvm_fatal("DRV_ITEM",
-                $sformatf("W_ONLY bad payload size: beats=%0d data=%0d wstrb=%0d (addr=0x%0h id=%0d)",
-                          beats, tr.wdata_beats.size(), tr.wstrb_beats.size(), tr.addr, tr.id))
+            `uvm_fatal("DRV_ITEM", $sformatf("W_ONLY bad payload size: beats=%0d data=%0d wstrb=%0d addr=0x%0h id=%0d", beats, tr.wdata_beats.size(), tr.wstrb_beats.size(), tr.addr, tr.id))
         end
 
         for (int i = 0; i < beats; i++) begin
@@ -571,7 +528,6 @@ class axi_mm_driver #(
                     return;
                 end
 
-                // FIX: wvalid is cb_master output => read vif.wvalid
                 if ((vif.wvalid === 1'b1) && (vif.cb_master.wready === 1'b1)) begin
                     w_hs = 1;
                     vif.cb_master.wvalid <= 1'b0;
@@ -583,9 +539,7 @@ class axi_mm_driver #(
             if (!w_hs) begin
                 vif.cb_master.wvalid <= 1'b0;
                 vif.cb_master.wlast  <= 1'b0;
-                `uvm_fatal("HS_TIMEOUT",
-                    $sformatf("W_ONLY TIMEOUT (%0d cycles). addr=0x%0h id=%0d beat=%0d",
-                              WAIT_TIMEOUT, tr.addr, tr.id, i))
+                `uvm_fatal("HS_TIMEOUT", $sformatf("W_ONLY TIMEOUT %0d cycles, addr=0x%0h id=%0d beat=%0d", WAIT_TIMEOUT, tr.addr, tr.id, i))
             end
         end
     endtask
@@ -622,9 +576,7 @@ class axi_mm_driver #(
         end
 
         if (!got) begin
-            `uvm_fatal("HS_TIMEOUT",
-                $sformatf("B_WAIT TIMEOUT (%0d cycles). wait_bid=%0d (addr=0x%0h id=%0d op_kind=%0d)",
-                          WAIT_TIMEOUT, tr.wait_bid, tr.addr, tr.id, tr.op_kind))
+            `uvm_fatal("HS_TIMEOUT", $sformatf("B_WAIT TIMEOUT %0d cycles, wait_bid=%0d addr=0x%0h id=%0d op_kind=%0d", WAIT_TIMEOUT, tr.wait_bid, tr.addr, tr.id, tr.op_kind))
         end
 
         tr.bresp = b_resp_store[k];
@@ -632,7 +584,7 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // OP_FULL write: AW + W + wait B(id)
+    // Drive write
     // ------------------------------------------------------------
     task automatic drive_write(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
         int beats;
@@ -644,15 +596,12 @@ class axi_mm_driver #(
         k     = id_key(tr.id);
 
         if (tr.wdata_beats.size() != beats || tr.wstrb_beats.size() != beats) begin
-            `uvm_fatal("DRV_ITEM",
-                $sformatf("Bad payload array size: beats=%0d data=%0d wstrb=%0d (addr=0x%0h id=%0d)",
-                          beats, tr.wdata_beats.size(), tr.wstrb_beats.size(), tr.addr, tr.id))
+            `uvm_fatal("DRV_ITEM", $sformatf("Bad payload array size: beats=%0d data=%0d wstrb=%0d addr=0x%0h id=%0d", beats, tr.wdata_beats.size(), tr.wstrb_beats.size(), tr.addr, tr.id))
         end
 
-        // bookkeeping for ID reuse
+        // Bookkeeping for ID reuse
         if (b_count.exists(k) && (b_count[k] > 0)) begin
-            `uvm_warning("DRV_ID",
-                $sformatf("Reusing ID=%0d while pending unconsumed B count=%0d.", tr.id, b_count[k]))
+            `uvm_warning("DRV_ID", $sformatf("Reusing ID=%0d while pending unconsumed B count=%0d", tr.id, b_count[k]))
         end
         if (!b_count.exists(k)) b_count[k] = 0;
         if (b_count[k] == 0) b_seen[k] = 1'b0;
@@ -686,10 +635,8 @@ class axi_mm_driver #(
                 return;
             end
 
-            // FIX: awvalid is cb_master output => read vif.awvalid
             if ((vif.awvalid === 1'b1) && (vif.cb_master.awready === 1'b1)) begin
-                aw_hs = 1;
-                // FIX: AW fields are cb_master outputs => read from vif.*
+                aw_hs        = 1;
                 aw_addr_lat  = vif.awaddr;
                 aw_len_lat   = vif.awlen;
                 aw_size_lat  = vif.awsize;
@@ -703,8 +650,7 @@ class axi_mm_driver #(
 
         if (!aw_hs) begin
             vif.cb_master.awvalid <= 1'b0;
-            `uvm_fatal("HS_TIMEOUT",
-                $sformatf("AW TIMEOUT (%0d cycles). addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
+            `uvm_fatal("HS_TIMEOUT", $sformatf("AW TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
 
         // W burst
@@ -729,9 +675,7 @@ class axi_mm_driver #(
             end
 
             if (!got) begin
-                `uvm_fatal("HS_TIMEOUT",
-                    $sformatf("B(by-id) TIMEOUT (%0d cycles). addr=0x%0h id=%0d",
-                              WAIT_TIMEOUT, tr.addr, tr.id))
+                `uvm_fatal("HS_TIMEOUT", $sformatf("B TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
             end
         end
 
@@ -739,14 +683,12 @@ class axi_mm_driver #(
         consume_one_b(tr.id);
 
         if (b_count.exists(k) && (b_count[k] > 0)) begin
-            `uvm_error("DRV_B",
-                $sformatf("After consuming one B, still pending B(s) for ID=%0d: b_count=%0d.",
-                          int'(tr.id), b_count[k]))
+            `uvm_error("DRV_B", $sformatf("After consuming one B, still pending B for ID=%0d: b_count=%0d.", int'(tr.id), b_count[k]))
         end
     endtask
 
     // ------------------------------------------------------------
-    // READ: AR + R beats
+    // Drive read
     // ------------------------------------------------------------
     task automatic drive_read(axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr);
         int beats;
@@ -787,10 +729,8 @@ class axi_mm_driver #(
                 return;
             end
 
-            // FIX: arvalid is cb_master output => read vif.arvalid
             if ((vif.arvalid === 1'b1) && (vif.cb_master.arready === 1'b1)) begin
-                ar_hs = 1;
-                // FIX: AR fields are cb_master outputs => read from vif.*
+                ar_hs        = 1;
                 ar_addr_lat  = vif.araddr;
                 ar_len_lat   = vif.arlen;
                 ar_size_lat  = vif.arsize;
@@ -804,11 +744,10 @@ class axi_mm_driver #(
 
         if (!ar_hs) begin
             vif.cb_master.arvalid <= 1'b0;
-            `uvm_fatal("HS_TIMEOUT",
-                $sformatf("AR TIMEOUT (%0d cycles). addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
+            `uvm_fatal("HS_TIMEOUT", $sformatf("AR TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
 
-        // RREADY handling
+        // RREADY
         if (!hold_rready_high) begin
             @(vif.cb_master);
             vif.cb_master.rready <= 1'b0;
@@ -828,7 +767,6 @@ class axi_mm_driver #(
                     return;
                 end
 
-                // FIX: rready is cb_master output => read vif.rready
                 if ((vif.cb_master.rvalid === 1'b1) && (vif.rready === 1'b1)) begin
                     r_hs = 1;
                     tr.rdata_beats[i] = vif.cb_master.rdata;
@@ -841,9 +779,7 @@ class axi_mm_driver #(
             end
 
             if (!r_hs) begin
-                `uvm_fatal("HS_TIMEOUT",
-                    $sformatf("R TIMEOUT (%0d cycles). addr=0x%0h id=%0d beat=%0d",
-                              WAIT_TIMEOUT, tr.addr, tr.id, i))
+                `uvm_fatal("HS_TIMEOUT", $sformatf("R TIMEOUT %0d cycles, addr=0x%0h id=%0d beat=%0d", WAIT_TIMEOUT, tr.addr, tr.id, i))
             end
         end
 
@@ -852,7 +788,7 @@ class axi_mm_driver #(
     endtask
 
     // ------------------------------------------------------------
-    // RUN
+    // Run phase
     // ------------------------------------------------------------
     task run_phase(uvm_phase phase);
         axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr;
@@ -871,21 +807,19 @@ class axi_mm_driver #(
         in_reset    = 1'b0;
 
         forever begin
-            // handle reset/flush/abort region
             if (is_reset() || should_abort() || in_flush || in_reset) begin
                 @(vif.cb_master);
                 drive_idle_abort();
 
-                drain_sequencer_fifo(is_reset() ? "is_reset" :
-                                     (in_flush ? "in_flush" :
-                                      (in_reset ? "in_reset" : "abort_drive")));
+                drain_sequencer_fifo(is_reset() ? "is_reset" : 
+                                    (in_flush   ? "in_flush" : 
+                                    (in_reset   ? "in_reset" : "abort_drive")));
 
                 if (is_reset()) begin
                     wait_reset_release();
                     in_reset = 1'b0;
                 end
 
-                // If flush is in progress, stay here until flush_done clears in_flush
                 if (in_flush) begin
                     continue;
                 end
@@ -898,13 +832,11 @@ class axi_mm_driver #(
                 end
             end
 
-            // get next item
             have_item = 1'b0;
-            tr = null;
+            tr        = null;
             seq_item_port.get_next_item(tr);
             have_item = 1'b1;
 
-            // if aborted immediately after getting item, drop it safely
             if (is_reset() || should_abort() || in_flush || in_reset) begin
                 drive_idle_abort();
                 if (have_item) begin
@@ -914,7 +846,7 @@ class axi_mm_driver #(
                 continue;
             end
 
-            // payload check only when needed
+            // Payload check only when needed
             need_payload_check = 0;
             if (tr.rw == AXI_WRITE) begin
                 if ((tr.op_kind == OP_FULL) || (tr.op_kind == OP_W_ONLY))
@@ -923,9 +855,7 @@ class axi_mm_driver #(
 
             if (need_payload_check) begin
                 if (!check_beats(tr)) begin
-                    `uvm_error("DRV",
-                        $sformatf("Bad beats payload sizes. rw=%0d op=%0d addr=0x%0h len=%0d id=%0d",
-                                  tr.rw, tr.op_kind, tr.addr, tr.len, tr.id))
+                    `uvm_error("DRV", $sformatf("Bad beats payload sizes: rw=%0d op=%0d addr=0x%0h len=%0d id=%0d", tr.rw, tr.op_kind, tr.addr, tr.len, tr.id))
                     if (have_item) begin
                         seq_item_port.item_done();
                         have_item = 1'b0;
@@ -934,7 +864,7 @@ class axi_mm_driver #(
                 end
             end
 
-            // do drive
+            // Do drive
             if (tr.rw == AXI_WRITE) begin
                 unique case (tr.op_kind)
                     OP_FULL:    drive_write(tr);
@@ -951,7 +881,7 @@ class axi_mm_driver #(
                 drive_read(tr);
             end
 
-            // complete item
+            // Complete item
             if (have_item) begin
                 seq_item_port.item_done();
                 have_item = 1'b0;
