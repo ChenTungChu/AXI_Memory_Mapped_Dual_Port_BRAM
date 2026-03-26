@@ -1,7 +1,4 @@
-//---------------------------------------------------------------------
-// axi_mm_pkg.sv
-// Central UVM package for AXI Memory-Mapped Verification Environment
-//---------------------------------------------------------------------
+// File: tb/uvm/pkg/axi_mm_pkg.sv
 `ifndef AXI_MM_PKG_SV
 `define AXI_MM_PKG_SV
 
@@ -11,15 +8,12 @@ package axi_mm_pkg;
   `include "uvm_macros.svh"
 
   //------------------------------------------------------------
-  // Types / Sequence Item
+  // Sequence Item
   //------------------------------------------------------------
   `include "../seq_item/axi_mm_seq_item.sv"
 
   //------------------------------------------------------------
-  // Commit (Route A)
-  // NOTE:
-  // - axi_mm_commit_if.sv is an interface => include/instantiate in top
-  // - commit_item/monitor are classes => include here
+  // Commit
   //------------------------------------------------------------
   `include "../commit/axi_mm_commit_item.sv"
   `include "../commit/axi_mm_commit_monitor.sv"
@@ -36,16 +30,12 @@ package axi_mm_pkg;
   //------------------------------------------------------------
   `include "../seq/axi_mm_seq.sv"
   `include "../seq/axi_mm_cov_rand_seq.sv"
-  // `include "../seq/axi_mm_cov_seq.sv"      // (optional/old)
+  // `include "../seq/axi_mm_cov_seq.sv"     
   `include "../cov/axi_mm_cov_sequence.sv"
-
 
   //------------------------------------------------------------
   // Reset Agent
   //------------------------------------------------------------
-  // NOTE:
-  // - reset_if.sv is an interface => include it in top, not in package
-  // - reset_agent.sv contains classes => include here
   `include "../reset/axi_mm_reset_agent.sv"
 
   //------------------------------------------------------------
