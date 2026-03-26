@@ -1,11 +1,11 @@
 // File: tb/uvm/monitor/axi_mm_monitor.sv
 
-// -------------------------------------------------------------------------
+// =========================================================================
 //  - Always fill rtime_beats[beat] with $time at each R handshake.
 //  - R: stamp done_time at RLAST.
 //  - B: DO NOT use edge-detect (bhs_prev), it will drop back-to-back B handshakes.
 //  --   Process every handshake using prev-cycle sampled payload to avoid race.
-// -------------------------------------------------------------------------
+// =========================================================================
 `ifndef AXI_MM_MONITOR_SV
 `define AXI_MM_MONITOR_SV
 
