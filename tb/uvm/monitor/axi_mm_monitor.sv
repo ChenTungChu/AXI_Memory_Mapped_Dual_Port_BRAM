@@ -196,7 +196,7 @@ class axi_mm_monitor #(
     endtask
 
     // ------------------------------------------------------------
-    // Address per beat (INCR/WRAP) with size clamp
+    // Helper function: Calculate beat address
     // ------------------------------------------------------------
     function automatic logic [ADDR_WIDTH-1:0] calc_beat_addr(
         input logic [ADDR_WIDTH-1:0] start_addr,
@@ -247,7 +247,7 @@ class axi_mm_monitor #(
     endfunction
 
     // ------------------------------------------------------------
-    // Helper function: Emit completed write
+    // Helper task: Emit completed write
     // ------------------------------------------------------------
     task automatic complete_and_emit(ref aw_tr_t e);
         int unsigned expected_beats;
