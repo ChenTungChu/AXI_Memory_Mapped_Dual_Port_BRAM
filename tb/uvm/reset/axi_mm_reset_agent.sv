@@ -1,33 +1,30 @@
+// File: tb/uvm/reset/axi_mm_reset_agent.sv
+
+// =========================================================================
+// TB-owned reset driver + reset monitor
+// - Monitor is the single source for broadcasting reset edges
+// - Broadcast reset edges via global uvm_event:
+// -- Reset assert    (rst_n: 1 -> 0)
+// -- Reset deassert  (rst_n: 0 -> 1)
+//
+// Built-in POR
+// - reset_agent will automatically start axi_mm_reset_seq once at start of run
+// - POR can be disabled or configured via uvm_config_db
+//
+// Interface (axi_mm_reset_if) requirements
+// - logic rst_n;
+// - clocking cb_drv @(posedge clk) with output rst_n
+// - clocking cb_mon @(posedge clk) with input  rst_n
+// - modport mp_driver  (clocking cb_drv, input clk);
+// - modport mp_monitor (clocking cb_mon, input clk);
+// =========================================================================
 `ifndef AXI_MM_RESET_AGENT_SV
 `define AXI_MM_RESET_AGENT_SV
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
 
-// -----------------------------------------------------------------------------
-// File: tb/uvm/axi_mm_reset_agent.sv
-//
-// TB-owned reset driver + reset monitor
-// - Monitor is the SINGLE source of truth for broadcasting reset edges.
-// - Broadcast reset edges via global uvm_event:
-//     "axi_mm_reset_assert"    (rst_n: 1 -> 0)
-//     "axi_mm_reset_deassert"  (rst_n: 0 -> 1)
-//
-// Built-in Power-On Reset (POR)
-// - reset_agent will automatically start axi_mm_reset_seq once at start of run
-// - POR can be disabled or configured via uvm_config_db.
-//
-// Interface requirements (axi_mm_reset_if):
-// - logic rst_n;
-// - clocking cb_drv @(posedge clk) with output rst_n
-// - clocking cb_mon @(posedge clk) with input  rst_n
-// - modport mp_driver  (clocking cb_drv, input clk);
-// - modport mp_monitor (clocking cb_mon, input clk);
-// -----------------------------------------------------------------------------
-
-// ============================
 // Reset sequence item
-// ============================
 class reset_seq_item extends uvm_sequence_item;
   `uvm_object_utils(reset_seq_item)
 
@@ -47,11 +44,7 @@ class reset_seq_item extends uvm_sequence_item;
   endfunction
 endclass
 
-
-// ============================
-// A simple reusable reset sequence
-// (assert then deassert)
-// ============================
+// Assert then deassert
 class axi_mm_reset_seq extends uvm_sequence #(reset_seq_item);
   `uvm_object_utils(axi_mm_reset_seq)
 
@@ -65,14 +58,14 @@ class axi_mm_reset_seq extends uvm_sequence #(reset_seq_item);
   virtual task body();
     reset_seq_item tr;
 
-    // ASSERT
+    // Assert
     tr = reset_seq_item::type_id::create("rst_assert_tr");
     start_item(tr);
       tr.rst_n       = 1'b0;
       tr.hold_cycles = assert_cycles;
     finish_item(tr);
 
-    // DEASSERT
+    // Deassert
     tr = reset_seq_item::type_id::create("rst_deassert_tr");
     start_item(tr);
       tr.rst_n       = 1'b1;
@@ -82,9 +75,9 @@ class axi_mm_reset_seq extends uvm_sequence #(reset_seq_item);
 endclass
 
 
-// ============================
+// ------------------------------------------------------------
 // Reset sequencer
-// ============================
+// ------------------------------------------------------------
 class reset_sequencer extends uvm_sequencer#(reset_seq_item);
   `uvm_component_utils(reset_sequencer)
   function new(string name, uvm_component parent);
@@ -93,10 +86,9 @@ class reset_sequencer extends uvm_sequencer#(reset_seq_item);
 endclass
 
 
-// ============================
+// ------------------------------------------------------------
 // Reset driver
-// ============================
-// Drives reset via clocking block (mp_driver.cb_drv.rst_n).
+// ------------------------------------------------------------
 class reset_driver extends uvm_driver#(reset_seq_item);
   `uvm_component_utils(reset_driver)
 
@@ -109,7 +101,7 @@ class reset_driver extends uvm_driver#(reset_seq_item);
   virtual function void build_phase(uvm_phase phase);
     super.build_phase(phase);
     if (!uvm_config_db#(virtual axi_mm_reset_if.mp_driver)::get(this, "", "vif", vif)) begin
-      `uvm_fatal("NOVIF", "reset_driver: axi_mm_reset_if.mp_driver not set (key=vif)")
+      `uvm_fatal("NOVIF", "reset_driver: axi_mm_reset_if.mp_driver not set")
     end
   endfunction
 
@@ -129,7 +121,7 @@ class reset_driver extends uvm_driver#(reset_seq_item);
   task run_phase(uvm_phase phase);
     reset_seq_item tr;
 
-    // Safe default at time 0: ASSERT reset (on first cb tick)
+    // Safe default at time 0
     @(vif.cb_drv);
     vif.cb_drv.rst_n <= 1'b0;
 
@@ -145,9 +137,9 @@ class reset_driver extends uvm_driver#(reset_seq_item);
 endclass
 
 
-// ============================
-// Reset monitor (edge detect + global events)
-// ============================
+// ------------------------------------------------------------
+// Reset monitor
+// ------------------------------------------------------------
 class reset_monitor extends uvm_component;
   `uvm_component_utils(reset_monitor)
 
@@ -166,7 +158,7 @@ class reset_monitor extends uvm_component;
     super.build_phase(phase);
 
     if (!uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::get(this, "", "vif", vif)) begin
-      `uvm_fatal("NOVIF", "reset_monitor: axi_mm_reset_if.mp_monitor not set (key=vif)")
+      `uvm_fatal("NOVIF", "reset_monitor: axi_mm_reset_if.mp_monitor not set")
     end
 
     ev_reset_assert   = uvm_event_pool::get_global("axi_mm_reset_assert");
@@ -182,18 +174,18 @@ class reset_monitor extends uvm_component;
     forever begin
       @(vif.cb_mon);
 
-      // 1 -> 0 : assert
+      // 1 -> 0 (assert)
       if ((rst_prev === 1'b1) && (vif.cb_mon.rst_n === 1'b0)) begin
         #0;
         ev_reset_assert.trigger();
-        `uvm_info("RST_MON", "Reset ASSERT -> trigger axi_mm_reset_assert", UVM_LOW)
+        `uvm_info("RST_MON", "Reset asserted", UVM_LOW)
       end
 
-      // 0 -> 1 : deassert
+      // 0 -> 1 (deassert)
       if ((rst_prev === 1'b0) && (vif.cb_mon.rst_n === 1'b1)) begin
         #0;
         ev_reset_deassert.trigger();
-        `uvm_info("RST_MON", "Reset DEASSERT -> trigger axi_mm_reset_deassert", UVM_LOW)
+        `uvm_info("RST_MON", "Reset deasserted", UVM_LOW)
       end
 
       rst_prev = vif.cb_mon.rst_n;
@@ -202,9 +194,9 @@ class reset_monitor extends uvm_component;
 endclass
 
 
-// ============================
+// ------------------------------------------------------------
 // Reset agent
-// ============================
+// ------------------------------------------------------------
 class reset_agent extends uvm_agent;
   `uvm_component_utils(reset_agent)
 
@@ -217,10 +209,8 @@ class reset_agent extends uvm_agent;
   virtual axi_mm_reset_if.mp_driver  vif_drv;
   virtual axi_mm_reset_if.mp_monitor vif_mon;
 
-  // ----------------------------
   // POR knobs
-  // ----------------------------
-  bit por_enable = 1'b1;
+  bit          por_enable          = 1'b1;
   int unsigned por_assert_cycles   = 50;
   int unsigned por_deassert_cycles = 10;
 
@@ -233,37 +223,33 @@ class reset_agent extends uvm_agent;
 
     void'(uvm_config_db#(uvm_active_passive_enum)::get(this, "", "is_active", is_active));
 
-    // POR config (optional)
+    // POR configuration
     void'(uvm_config_db#(bit)::get(this, "", "por_enable", por_enable));
     void'(uvm_config_db#(int unsigned)::get(this, "", "por_assert_cycles", por_assert_cycles));
     void'(uvm_config_db#(int unsigned)::get(this, "", "por_deassert_cycles", por_deassert_cycles));
 
-    // ---- monitor vif (required) ----
+    // Monitor vif
     if (!uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::get(this, "", "vif_mon", vif_mon)) begin
       if (!uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::get(this, "", "vif", vif_mon)) begin
-        `uvm_fatal("NOVIF",
-          $sformatf("reset_agent: mp_monitor vif not set (keys tried: vif_mon, vif). agent=%s",
-                    get_full_name()))
+        `uvm_fatal("NOVIF", $sformatf("reset_agent: mp_monitor vif not set, agent=%s", get_full_name()))
       end
     end
 
-    // ---- driver vif (required if ACTIVE) ----
+    // Driver vif
     if (is_active == UVM_ACTIVE) begin
       if (!uvm_config_db#(virtual axi_mm_reset_if.mp_driver)::get(this, "", "vif_drv", vif_drv)) begin
         if (!uvm_config_db#(virtual axi_mm_reset_if.mp_driver)::get(this, "", "vif", vif_drv)) begin
-          `uvm_fatal("NOVIF",
-            $sformatf("reset_agent: mp_driver vif not set (keys tried: vif_drv, vif). agent=%s",
-                      get_full_name()))
+          `uvm_fatal("NOVIF", $sformatf("reset_agent: mp_driver vif not set, agent=%s", get_full_name()))
         end
       end
     end
 
-    // ---- monitor ----
+    // Monitor
     mon = reset_monitor::type_id::create("mon", this);
     uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(this, "mon", "vif",     vif_mon);
     uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(this, "mon", "vif_mon", vif_mon);
 
-    // ---- driver + sequencer (ACTIVE only) ----
+    // Driver + Sequencer
     if (is_active == UVM_ACTIVE) begin
       seqr = reset_sequencer::type_id::create("seqr", this);
       drv  = reset_driver   ::type_id::create("drv",  this);
@@ -280,15 +266,13 @@ class reset_agent extends uvm_agent;
     end
   endfunction
 
-  // ----------------------------
-  // automatic POR
-  // ----------------------------
+  // Automatic POR
   task run_phase(uvm_phase phase);
     axi_mm_reset_seq por_seq;
 
     if (is_active != UVM_ACTIVE) return;
     if (!por_enable) begin
-      `uvm_info("RST_POR", "POR disabled by config (por_enable=0)", UVM_LOW)
+      `uvm_info("RST_POR", "POR disabled by config", UVM_LOW)
       return;
     end
 
@@ -297,10 +281,7 @@ class reset_agent extends uvm_agent;
     por_seq.assert_cycles   = por_assert_cycles;
     por_seq.deassert_cycles = por_deassert_cycles;
 
-    `uvm_info("RST_POR",
-      $sformatf("Starting POR: assert=%0d cycles, deassert_hold=%0d cycles",
-                por_assert_cycles, por_deassert_cycles),
-      UVM_LOW)
+    `uvm_info("RST_POR", $sformatf("Starting POR: assert=%0d cycles, deassert_hold=%0d cycles", por_assert_cycles, por_deassert_cycles), UVM_LOW)
 
     por_seq.start(seqr);
   endtask
