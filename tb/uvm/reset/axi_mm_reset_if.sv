@@ -1,10 +1,11 @@
-//------------------------------------------------------------------------------
-// File: tb/interface/reset_if.sv
-// Reset Interface for UVM Testbench
-// - TB-owned reset (not DUT-generated)
+// File: tb/uvm/reset/axi_mm_reset_if.sv
+
+// =========================================================================
+// Reset Interface for UVM testbench
+// - TB-owned reset
 // - Designed to work with reset_agent + global uvm_event
-// - Robust: separate clocking blocks for driver/monitor to avoid direction issues
-//------------------------------------------------------------------------------
+// - Separate clocking blocks for driver/monitor to avoid direction issues
+// =========================================================================
 
 `ifndef AXI_MM_RESET_IF_SV
 `define AXI_MM_RESET_IF_SV
@@ -15,23 +16,14 @@ interface axi_mm_reset_if (
     input logic clk
 );
 
-    // -------------------------------------------------------------------------
-    // Reset signal (active-low)
-    // Default asserted at time 0 for safety.
-    // -------------------------------------------------------------------------
+    // Reset signal
     logic rst_n = 1'b0;
 
     // -------------------------------------------------------------------------
     // Clocking blocks
     //   - cb_drv: reset_driver drives rst_n
     //   - cb_mon: reset_monitor samples rst_n
-    //
-    // IMPORTANT:
-    //   Do NOT share a single clocking block with rst_n declared as "output"
-    //   for both driver and monitor. That can make monitor able to drive rst_n
-    //   and can trigger subtle race/permission issues.
     // -------------------------------------------------------------------------
-
     // Driver clocking block
     clocking cb_drv @(posedge clk);
         default input #1step output #0;
@@ -47,14 +39,13 @@ interface axi_mm_reset_if (
     // -------------------------------------------------------------------------
     // Modports
     // -------------------------------------------------------------------------
-
-    // Reset driver (TB control)
+    // Reset driver
     modport mp_driver (
         clocking cb_drv,
         input  clk
     );
 
-    // Reset monitor (observe only)
+    // Reset monitor
     modport mp_monitor (
         clocking cb_mon,
         input  clk
