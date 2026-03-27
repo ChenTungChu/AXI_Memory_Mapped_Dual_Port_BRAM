@@ -296,7 +296,7 @@ class axi_mm_seq #(
         end
         else begin
             // Avoid huge ranges that overflow
-            `uvm_fatal("SEQ_ADDR", "rand_addr(): must enable restrict_to_mem or restrict_addr_window")
+            `uvm_fatal("SEQ_ADDR", "rand_addr(): Must enable restrict_to_mem or restrict_addr_window")
             base         = 0;
             region_bytes = 1;
         end
