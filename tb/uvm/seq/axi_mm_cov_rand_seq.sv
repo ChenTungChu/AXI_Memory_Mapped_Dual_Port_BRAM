@@ -1,3 +1,4 @@
+// File: tb/uvm/seq/axi_mm_cov_rand_seq.sv
 `ifndef AXI_MM_COV_RAND_SEQ_SV
 `define AXI_MM_COV_RAND_SEQ_SV
 
@@ -5,14 +6,6 @@ import uvm_pkg::*;
 `include "uvm_macros.svh"
 import axi_mm_pkg::*;
 
-// Constrained-random traffic for coverage closure.
-// Key fixes:
-// 1) If enable_split_ops=1, generate a *coherent triplet*:
-//    AW_ONLY -> W_ONLY -> B_WAIT (same id/addr/len/size/burst)
-//    so DUT/monitor/scoreboard won't explode.
-// 2) WRAP start address aligned to wrap boundary = beats * size_bytes
-// 3) FIXED burst footprint uses 1 beat
-//
 class axi_mm_cov_rand_seq #(
   int ADDR_WIDTH = 32,
   int DATA_WIDTH = 64,
@@ -23,9 +16,7 @@ class axi_mm_cov_rand_seq #(
 
   localparam int BYTES_PER_BEAT = (DATA_WIDTH/8);
 
-  // -----------------------
   // knobs
-  // -----------------------
   rand int unsigned n_tr = 2000;
 
   rand logic [ADDR_WIDTH-1:0] win0_base  = '0;
@@ -33,51 +24,50 @@ class axi_mm_cov_rand_seq #(
   rand int unsigned           win0_bytes = 4096;
   rand int unsigned           win1_bytes = 4096;
 
-  rand int unsigned pct_win0 = 50;
+  rand int unsigned           pct_win0 = 50;
+  rand int unsigned           pct_wr = 50; // write percentage
 
-  rand int unsigned pct_wr = 50; // write %
+  // Burst mix (00 FIXED / 01 INCR / 10 WRAP)
+  rand int unsigned           pct_incr  = 60;
+  rand int unsigned           pct_fixed = 20;
+  rand int unsigned           pct_wrap  = 20;
 
-  // burst mix (00 FIXED, 01 INCR, 10 WRAP)
-  rand int unsigned pct_incr  = 60;
-  rand int unsigned pct_fixed = 20;
-  rand int unsigned pct_wrap  = 20;
+  // Size mix (1/2/4/8 but capped by bus width)
+  rand int unsigned           pct_size_1 = 25;
+  rand int unsigned           pct_size_2 = 25;
+  rand int unsigned           pct_size_4 = 25;
+  rand int unsigned           pct_size_8 = 25;
 
-  // size mix (bytes): 1/2/4/8 but capped by bus width
-  rand int unsigned pct_size_1 = 25;
-  rand int unsigned pct_size_2 = 25;
-  rand int unsigned pct_size_4 = 25;
-  rand int unsigned pct_size_8 = 25;
-
-  // length (beats) mix
-  rand int unsigned pct_len_1     = 20; // 1 beat
-  rand int unsigned pct_len_short = 40; // 2~4
-  rand int unsigned pct_len_mid   = 35; // 5~16
-  rand int unsigned pct_len_long  = 3;  // 17~64
-  rand int unsigned pct_len_max   = 2;  // 256
+  // Length mix
+  rand int unsigned           pct_len_1     = 20; // 1 beat
+  rand int unsigned           pct_len_short = 40; // 2 - 4
+  rand int unsigned           pct_len_mid   = 35; // 5 - 16
+  rand int unsigned           pct_len_long  = 3;  // 17 - 64
+  rand int unsigned           pct_len_max   = 2;  // 256
 
   // WSTRB bias
-  rand bit enable_wstrb_bias = 0;
-  rand int unsigned pct_w_all0   = 5;
-  rand int unsigned pct_w_all1   = 20;
-  rand int unsigned pct_w_onehot = 20;
-  rand int unsigned pct_w_sparse = 55;
+  rand bit                    enable_wstrb_bias = 0;
+  rand int unsigned           pct_w_all0   = 5;
+  rand int unsigned           pct_w_all1   = 20;
+  rand int unsigned           pct_w_onehot = 20;
+  rand int unsigned           pct_w_sparse = 55;
 
-  // edge bias
-  rand bit bias_boundary   = 0;
-  rand bit bias_end_of_mem = 0;
+  // Edge bias
+  rand bit                    bias_boundary   = 0;
+  rand bit                    bias_end_of_mem = 0;
 
-  // split ops control
-  rand bit enable_split_ops = 0;
+  // Split ops control
+  rand bit                    enable_split_ops = 0;
 
-  // if split ops enabled: percentage to use split-triplet vs full write
+  // Percentage to use split triplet vs full write (If enable_split_ops = 1)
   rand int unsigned pct_split_triplet = 20; // 20% triplet, 80% full
 
-  // randomize retry
+  // Randomize retry
   int unsigned rand_retry = 30;
 
-  // -----------------------
-  // sanity constraints
-  // -----------------------
+  // ------------------------------------------------------------
+  // Sanity constraints
+  // ------------------------------------------------------------
   constraint c_pct_range {
     pct_win0 inside {[0:100]};
     pct_wr   inside {[0:100]};
@@ -90,13 +80,16 @@ class axi_mm_cov_rand_seq #(
     pct_split_triplet inside {[0:100]};
   }
 
+  // ------------------------------------------------------------
+  // Constructor
+  // ------------------------------------------------------------
   function new(string name="axi_mm_cov_rand_seq");
     super.new(name);
   endfunction
 
-  // -----------------------
-  // helper: pick by 4-way pct
-  // -----------------------
+  // ------------------------------------------------------------
+  // Helper function: Pick by 4 way pct
+  // ------------------------------------------------------------
   function automatic int unsigned pick_by_pct4(
     int unsigned p0, int unsigned p1, int unsigned p2, int unsigned p3
   );
@@ -115,7 +108,7 @@ class axi_mm_cov_rand_seq #(
     int unsigned sum;
     int unsigned r;
 
-    // Allow pct sum != 100 (robust against partial knob overrides in tests)
+    // Allow pct sum != 100
     sum = pct_len_1 + pct_len_short + pct_len_mid + pct_len_long + pct_len_max;
     if (sum == 0) return 1;
 
@@ -142,9 +135,9 @@ class axi_mm_cov_rand_seq #(
 
     idx = pick_by_pct4(pct_size_1, pct_size_2, pct_size_4, pct_size_8);
     case (idx)
-      0: return (1  <= max_bytes) ? 1 : max_bytes;
-      1: return (2  <= max_bytes) ? 2 : max_bytes;
-      2: return (4  <= max_bytes) ? 4 : max_bytes;
+      0: return       (1 <= max_bytes) ? 1 : max_bytes;
+      1: return       (2 <= max_bytes) ? 2 : max_bytes;
+      2: return       (4 <= max_bytes) ? 4 : max_bytes;
       default: return (8 <= max_bytes) ? 8 : max_bytes;
     endcase
   endfunction
@@ -181,9 +174,9 @@ class axi_mm_cov_rand_seq #(
     return w;
   endfunction
 
-  // pick a start addr within window; aligns to:
-  // - FIXED/INCR: align to size_bytes
-  // - WRAP: align to wrap boundary = beats*size_bytes
+  // ------------------------------------------------------------
+  // Pick a start addr within window
+  // ------------------------------------------------------------
   function automatic logic [ADDR_WIDTH-1:0] pick_addr(
       logic [ADDR_WIDTH-1:0] base,
       int unsigned win_bytes,
@@ -197,11 +190,11 @@ class axi_mm_cov_rand_seq #(
       int unsigned max_off;
 
       if (burst_sel == 2'b00) begin
-        total_bytes = size_bytes;        // FIXED footprint = 1 beat
+        total_bytes = size_bytes;   
         align_bytes = size_bytes;
       end
       else begin
-        total_bytes = beats * size_bytes; // INCR/WRAP footprint
+        total_bytes = beats * size_bytes;                  // INCR/WRAP footprint
         if (burst_sel == 2'b10) align_bytes = total_bytes; // WRAP boundary align
         else                    align_bytes = size_bytes;
       end
@@ -240,7 +233,9 @@ class axi_mm_cov_rand_seq #(
       return a;
   endfunction
 
-  // randomize helper with retries (casts included)
+  // ------------------------------------------------------------
+  // Helper function: Randomize item 
+  // ------------------------------------------------------------
   function automatic bit rand_item(
     ref axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr,
     input axi_rw_e rw_sel,
@@ -254,12 +249,12 @@ class axi_mm_cov_rand_seq #(
     logic [7:0] len8;
     logic [2:0] size3;
 
-    // beats -> AXI LEN (0-based)
+    // Beats -> AXI len 
     if (beats == 0) return 0;
     len8  = beats - 1;
     size3 = $clog2(size_bytes);
 
-    // Directly assign fields (avoid solver issues with rand dynamic arrays)
+    // Directly assign fields
     tr.rw      = rw_sel;
     tr.op_kind = op_sel;
     tr.addr    = addr_sel;
@@ -268,18 +263,17 @@ class axi_mm_cov_rand_seq #(
     tr.size    = size3;
     tr.burst   = burst_sel;
 
-    // Make the monitor-side model consistent: these are FULL/W_ONLY streaming cases
-    // Allocate payload arrays deterministically when we will drive W beats.
+    // Make the monitor-side model consistent
     if ((rw_sel == AXI_WRITE) && (op_sel inside {OP_FULL, OP_W_ONLY})) begin
-      tr.set_beats_len(tr.len); // len is 0-based; set_beats_len expects 0-based
+      tr.set_beats_len(tr.len); 
     end
 
     return 1;
   endfunction
 
-  // -----------------------
-  // main body
-  // -----------------------
+  // ------------------------------------------------------------
+  // Main body
+  // ------------------------------------------------------------
   virtual task body();
     axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr;
     axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) tr2;
@@ -289,10 +283,10 @@ class axi_mm_cov_rand_seq #(
 
     `uvm_info("COV_SEQ_CFG",
       $sformatf("CFG: n_tr=%0d BYTES_PER_BEAT=%0d | size_pct(1/2/4/8)=%0d/%0d/%0d/%0d | len_pct(1/short/mid/long/max)=%0d/%0d/%0d/%0d/%0d",
-                n_tr, BYTES_PER_BEAT,
+                n_tr, 
+                BYTES_PER_BEAT,
                 pct_size_1, pct_size_2, pct_size_4, pct_size_8,
-                pct_len_1, pct_len_short, pct_len_mid, pct_len_long, pct_len_max),
-      UVM_LOW)
+                pct_len_1, pct_len_short, pct_len_mid, pct_len_long, pct_len_max), UVM_LOW)
 
     repeat (n_tr) begin
       bit is_write;
@@ -308,28 +302,28 @@ class axi_mm_cov_rand_seq #(
 
       logic [ID_WIDTH-1:0] id_sel;
 
-      // decide R/W
+      // Decide R/W
       is_write = ($urandom_range(1,100) <= pct_wr);
 
-      // decide split-triplet only for WRITE when enabled
+      // Decide split triplet only for WRITE when enabled
       do_split_triplet = 0;
       if (is_write && enable_split_ops) begin
         do_split_triplet = ($urandom_range(1,100) <= pct_split_triplet);
       end
 
-      // choose basic fields
+      // Choose basic fields
       beats      = pick_len_beats();
       size_bytes = pick_size_bytes();
       burst_sel  = pick_burst();
 
-      // WRAP legality: beats must be power-of-2, else force INCR
+      // WRAP legality, beats must be power-of-2, else force INCR
       if (burst_sel == 2'b10) begin
         if (!((beats != 0) && ((beats & (beats-1)) == 0))) begin
           burst_sel = 2'b01;
         end
       end
 
-      // pick window
+      // Pick window
       if ($urandom_range(1,100) <= pct_win0) begin
         base      = win0_base;
         win_bytes = win0_bytes;
@@ -340,19 +334,17 @@ class axi_mm_cov_rand_seq #(
 
       addr_sel = pick_addr(base, win_bytes, size_bytes, beats, burst_sel);
 
-      // id selection
+      // Id selection
       id_sel = $urandom();
 
-      // -------------------------
-      // READ: always OP_FULL
-      // -------------------------
+      // ------------------------------------------------------------
+      // Read
+      // ------------------------------------------------------------
       if (!is_write) begin
         tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_rd");
 
         if (!rand_item(tr, AXI_READ, OP_FULL, addr_sel, beats, size_bytes, burst_sel, id_sel)) begin
-          `uvm_error("COV_SEQ",
-            $sformatf("READ randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)",
-                      beats, size_bytes, burst_sel, addr_sel))
+          `uvm_error("COV_SEQ", $sformatf("READ randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)", beats, size_bytes, burst_sel, addr_sel))
           continue;
         end
 
@@ -361,9 +353,9 @@ class axi_mm_cov_rand_seq #(
         continue;
       end
 
-      // -------------------------
-      // WRITE: either FULL, or coherent split-triplet
-      // -------------------------
+      // ------------------------------------------------------------
+      // Write
+      // ------------------------------------------------------------
       if (!do_split_triplet) begin
         tr = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_wr_full");
 
@@ -374,7 +366,7 @@ class axi_mm_cov_rand_seq #(
           continue;
         end
 
-        // override payload after randomize (seq_item allocates arrays for OP_FULL)
+        // Override payload after randomize
         if (tr.wdata_beats.size() != (tr.len+1) || tr.wstrb_beats.size() != (tr.len+1))
           tr.set_beats_len(tr.len);
 
@@ -385,24 +377,20 @@ class axi_mm_cov_rand_seq #(
         finish_item(tr);
       end
       else begin
-        // Split triplet: AW_ONLY -> W_ONLY -> B_WAIT (same ID/fields)
+        // Split triplet: AW_ONLY -> W_ONLY -> B_WAIT 
         tr  = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_aw");
         tr2 = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_w");
         tr3 = axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)::type_id::create("cov_b");
 
-        // AW_ONLY (keep same beats/size/burst)
+        // AW_ONLY
         if (!rand_item(tr, AXI_WRITE, OP_AW_ONLY, addr_sel, beats, size_bytes, burst_sel, id_sel)) begin
-          `uvm_error("COV_SEQ",
-            $sformatf("WRITE(OP_AW_ONLY) randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)",
-                      beats, size_bytes, burst_sel, addr_sel))
+          `uvm_error("COV_SEQ", $sformatf("WRITE(OP_AW_ONLY) randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)", beats, size_bytes, burst_sel, addr_sel))
           continue;
         end
 
-        // W_ONLY: must match AW
+        // W_ONLY
         if (!rand_item(tr2, AXI_WRITE, OP_W_ONLY, addr_sel, beats, size_bytes, burst_sel, id_sel)) begin
-          `uvm_error("COV_SEQ",
-            $sformatf("WRITE(OP_W_ONLY) randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)",
-                      beats, size_bytes, burst_sel, addr_sel))
+          `uvm_error("COV_SEQ", $sformatf("WRITE(OP_W_ONLY) randomize failed (beats=%0d sizeB=%0d burst=%0b addr=0x%0h)", beats, size_bytes, burst_sel, addr_sel))
           continue;
         end
 
@@ -413,9 +401,7 @@ class axi_mm_cov_rand_seq #(
         foreach (tr2.wdata_beats[i]) tr2.wdata_beats[i] = {$urandom(), $urandom()};
         foreach (tr2.wstrb_beats[i]) tr2.wstrb_beats[i] = gen_wstrb_pattern();
 
-        // B_WAIT: wait_bid must match id
-        // For B_WAIT semantics, keep len soft to 0; don't force beats here.
-        // We'll just randomize with minimal constraints and explicitly set wait_bid=id.
+        // B_WAIT (wait_bid must match id)
         if (!tr3.randomize() with {
               rw      == AXI_WRITE;
               op_kind == OP_B_WAIT;
