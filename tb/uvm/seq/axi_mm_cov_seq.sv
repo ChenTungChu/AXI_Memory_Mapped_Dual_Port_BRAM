@@ -14,22 +14,23 @@ class axi_mm_cov_seq #(
 
     `uvm_object_param_utils(axi_mm_cov_seq #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH))
 
-    // Number of transactions to generate
     rand int unsigned num_transactions = 200;
 
     constraint c_num_tx {
-        num_transactions inside {[50:2000]};  // reasonable range
+        num_transactions inside {[50:2000]};
     }
 
+    // ------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------
     function new(string name="axi_mm_cov_seq");
         super.new(name);
     endfunction
 
     // ------------------------------------------------------------
-    // Body: generate high-volume randomized AXI MM traffic
+    // Main body
     // ------------------------------------------------------------
     virtual task body();
-        // Task-local variables (declare at top)
         axi_mm_seq_item #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH) req;
         int i;
 
@@ -41,19 +42,19 @@ class axi_mm_cov_seq #(
 
             start_item(req);
 
-            // Constrain burst_len and addr to model RAM size (optional)
+            // Constrain burst_len and addr to model RAM size
             if (!req.randomize() with {
-                do_write dist {1 := 50, 0 := 50};        // read/write 50:50
+                do_write dist {1 := 50, 0 := 50};         // read/write 50:50
                 addr % 4 == 0;                            // 4-byte aligned
                 burst_len inside {[1:16]};                // burst length
                 addr + burst_len * (DATA_WIDTH/8) < (1<<ADDR_WIDTH);
             }) begin
-                `uvm_fatal(get_type_name(), "Randomization failed! Check constraints.")
+                `uvm_fatal(get_type_name(), "Randomization failed! Check constraints")
             end
 
             finish_item(req);
 
-            // Optional: occasional cycle delay
+            // Occasional cycle delay
             if ($urandom_range(0,5) == 0)
                 #(1);
         end
