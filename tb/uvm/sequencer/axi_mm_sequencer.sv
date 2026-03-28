@@ -1,4 +1,4 @@
-// File: tb/uvm/axi_mm_sequencer.sv
+// File: tb/uvm/sequencer/axi_mm_sequencer.sv
 `ifndef AXI_MM_SEQUENCER_SV
 `define AXI_MM_SEQUENCER_SV
 
@@ -13,10 +13,11 @@ class axi_mm_sequencer #(
     axi_mm_seq_item#(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)
 );
 
-    `uvm_component_param_utils(
-        axi_mm_sequencer #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH)
-    )
+    `uvm_component_param_utils(axi_mm_sequencer #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH))
 
+    // ------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------
     function new(string name, uvm_component parent);
         super.new(name, parent);
     endfunction
