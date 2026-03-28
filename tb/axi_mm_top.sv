@@ -12,52 +12,52 @@ import axi_mm_pkg::*;
 
 module axi_mm_top;
 
-    //------------------------------------------------------------
+    // ------------------------------------------------------------
     // Clock
-    //------------------------------------------------------------
+    // ------------------------------------------------------------
     logic dma_clk;
     logic core_clk;
 
-    //------------------------------------------------------------
-    // Reset (DRIVEN BY reset_if / reset_agent)
-    //------------------------------------------------------------
+    // ------------------------------------------------------------
+    // Reset
+    // ------------------------------------------------------------
     logic rst_n;
 
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     // Internal
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     logic ce_idle;
 
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     // Interfaces
-    //------------------------------------------------------------
-    // Reset interface (single source of truth)
+    //-------------------------------------------------------------
+    // Reset interface
     axi_mm_reset_if reset_if_i (
         .clk (dma_clk)
     );
 
-    // Export reset_if's rst_n as top-level rst_n (single driver)
+    // Export reset_if's rst_n as top-level rst_n
     assign rst_n = reset_if_i.rst_n;
 
-    // AXI-MM interfaces use rst_n
+    // AXI-MM interfaces
     axi_mm_if  #(32, 64, 4, 1) dma_if  (dma_clk,  rst_n);
     axi_mm_if  #(32, 64, 4, 1) core_if (core_clk, rst_n);
 
-    // Apply observation interface (dma_clk domain)
+    // Apply interface (dma_clk domain)
     axi_mm_apply_if #(32, 64, 4, 8) apply_if_i (
         .clk   (dma_clk),
         .rst_n (rst_n)
     );
 
-    // Commit observation interface (dma_clk domain)
+    // Commit interface (dma_clk domain)
     axi_mm_commit_if #(32, 64, 4, 8) commit_if_i (
         .clk   (dma_clk),
         .rst_n (rst_n)
     );
 
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     // AXI Slave selection
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
 `ifdef USE_DUMMY_SLAVE
 
     axi_mm_dummy_slave #(
@@ -111,9 +111,9 @@ module axi_mm_top;
 
 `endif
 
-    //------------------------------------------------------------
+    // ------------------------------------------------------------
     // Clock generation
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     initial begin
         dma_clk  = 1'b0;
         core_clk = 1'b0;
@@ -122,50 +122,46 @@ module axi_mm_top;
     always #5  dma_clk  = ~dma_clk;   // 100 MHz
     always #8  core_clk = ~core_clk;  // 62.5 MHz
 
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     // UVM
-    //------------------------------------------------------------
+    //-------------------------------------------------------------
     initial begin
         $dumpfile("axi_mm_top.vcd");
         $dumpvars(0, axi_mm_top);
 
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         // AXI agents
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p0_agent", "vif_m",   dma_if.mp_master);
         uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p0_agent", "vif_mon", dma_if.mp_monitor);
 
         uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_master )::set(null, "*.p1_agent", "vif_m",   core_if.mp_master);
         uvm_config_db#(virtual axi_mm_if#(32,64,4,1).mp_monitor)::set(null, "*.p1_agent", "vif_mon", core_if.mp_monitor);
 
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         // Reset agent
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent", "vif_drv", reset_if_i.mp_driver);
         uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent", "vif_mon", reset_if_i.mp_monitor);
 
-        // legacy compatibility
         uvm_config_db#(virtual axi_mm_reset_if.mp_driver )::set(null, "*.rst_agent.drv", "vif", reset_if_i.mp_driver);
         uvm_config_db#(virtual axi_mm_reset_if.mp_monitor)::set(null, "*.rst_agent.mon", "vif", reset_if_i.mp_monitor);
 
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         // Commit monitor
-        // --------------------------------------------------------
-        uvm_config_db#(virtual axi_mm_commit_if#(32,64,4,8).mp_monitor)::set(
-            null, "*.commit_mon", "vif", commit_if_i.mp_monitor
-        );
+        // ---------------------------------------------------------
+        uvm_config_db#(virtual axi_mm_commit_if#(32,64,4,8).mp_monitor)::set(null, "*.commit_mon", "vif", commit_if_i.mp_monitor);
 
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         // Apply monitor
-        // --------------------------------------------------------
-        uvm_config_db#(virtual axi_mm_apply_if#(32,64,4,8).mp_monitor)::set(
-            null, "*.apply_mon", "vif", apply_if_i.mp_monitor
-        );
+        // ---------------------------------------------------------
+        uvm_config_db#(virtual axi_mm_apply_if#(32,64,4,8).mp_monitor)::set(null, "*.apply_mon", "vif", apply_if_i.mp_monitor);
 
-        // --------------------------------------------------------
+        // ---------------------------------------------------------
         // Run test
-        // --------------------------------------------------------
-        run_test("axi_mm_directed_test");
+        // - axi_mm_smoke_test, axi_mm_directed_test, axi_mm_random_test, axi_mm_corner_test, axi_mm_coverage_test
+        // ---------------------------------------------------------
+        run_test("axi_mm_coverage_test");
     end
 
 endmodule
