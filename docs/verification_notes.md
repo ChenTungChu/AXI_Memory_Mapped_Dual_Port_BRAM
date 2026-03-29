@@ -1,59 +1,65 @@
-# Verification Notes — AXI Dual-Port Multi-Clock BRAM (UVM 1.2)
+# AXI MM Dual Port BRAM with UVM 1.2 -Verification Notes  
 
-Author: Eric  
-DUT: `dut/axi_mm_dual_port_bram.sv`  
-TB Top: `tb/axi_mm_top.sv`  
-Methodology: UVM 1.2  
-Simulator: Questa/ModelSim (driven by `run.tcl`)
-
----
-
-## Highlights (what to look at first)
-
-- **axi_mm_corner_test**: hand-picked corner cases (WRAP/FIXED edges, boundary crossing, AW/AR contention, outstanding depth, mixed-ID ordering, reset during activity, max burst LEN=255, narrow-size lane mapping, ready backpressure)
-- **axi_mm_coverage_test**: coverage-driven sweeps (len/size sweep, wstrb stress, boundary/end-of-mem stress, ordering suite, backpressure, reset injection)
-- **Case 4 rework**: the biggest debug item in the final stage; this was where the last mismatch issue was isolated and resolved
-- **Coverage closure**: total covergroup coverage improved from **70.53%** to **96.14%**
+- **DUT**: `dut/axi_mm_dual_port_bram.sv` 
+- **TB Top**: `tb/axi_mm_top.sv` 
+- **TB Methodology**: UVM 1.2
+- **Simulator**: QuestaSim  
 
 ---
 
-## 1) Verification goals (what I wanted to prove)
+## Summary
+
+- **axi_mm_smoke_test**
+  -  Quick sanity check for basic Dual-port AXI-MM read/write behavior
+- **axi_mm_directed_test** 
+  - Deterministic directed scenarios for single-beat access, INCR/WRAP/FIXED bursts, partial `WSTRB`, same-address merge, cross-port visibility, and selected backpressure checks
+- **axi_mm_random_test**
+  - Long dual-port random stress with mixed read/write traffic, backpressure, burst variation, partial `WSTRB`, locality, and split-window operation
+    - 44k WRITES / 36k READS for both ports, with 360k `commit_beats` level
+- **axi_mm_corner_test**
+  - WRAP/FIXED edges, boundary crossing, AW/AR contention, outstanding depth, mixed-ID ordering, reset during activity, max burst LEN=255, narrow-size lane mapping, ready backpressure
+- **axi_mm_coverage_test**
+  -  Coverage-driven sweeps (len/size sweep, `WSTRB` stress, boundary/end-of-mem stress, ordering suite, backpressure, reset injection)
+- **Coverage closure**
+  - Total covergroup coverage improved from **70.53%** to **96.14%**
+
+
+
+## Verification Goals
 
 This project verifies a verification-oriented, multi-clock dual AXI4-MM scratchpad model with:
-- Two AXI4-MM slave ports (`axi0_if` @ `dma_clk`, `axi1_if` @ `core_clk`)
+- Two AXI4-MM slave ports 
+  - `axi0_if` at `dma_clk`
+  - `axi1_if` at `core_clk`
+
 - Burst-level atomic commit semantics
-- `READ_FIRST` / no forwarding behavior
+- `READ_FIRST`  with no forwarding behavior
 - AXI ready/valid backpressure behavior
 - Multi-clock interaction correctness for Port1 write bridging (`core_clk` → `dma_clk`)
 
 Main verification focus:
 - AXI handshake correctness under backpressure
-- Burst integrity (no partial commit / no beat-by-beat visibility into memory image)
+- Burst integrity (no partial commit/no beat-by-beat visibility into memory image)
 - Correct address behavior for INCR / WRAP / FIXED
 - Correct byte-lane masking with narrow sizes and `WSTRB`
 - Deterministic scoreboard alignment around cross-clock commit/apply visibility
 
----
 
-## 2) Testbench architecture (high level)
+
+## Testbench Architecture
 
 The UVM environment contains:
 - Two AXI-MM agents (one per port)
 - A scoreboard with byte-level reference memory model
 - Commit/apply observation monitors
 - Functional coverage subscribers
-- Directed, random, corner, and coverage-oriented test layers
+- Smoke, directed, random, corner, and coverage test layers
 
-High-level idea:
-- The DUT is verification-oriented, so I exposed enough observation points to let the scoreboard align with actual visibility behavior
-- The scoreboard models memory at byte level and compares reads against the expected visible image
-- Special care is needed because this DUT is multi-clock and uses a burst commit engine
 
----
 
-## 3) Scoreboard stability assumption (important)
+## Scoreboard Stability Assumption
 
-Because this DUT is multi-clock and the commit engine lives in `dma_clk`, the scoreboard uses a conservative stabilization window to avoid false failures caused by cross-domain timing skew.
+Because this DUT is multi-clock and the commit engine lives in `dma_clk`, the scoreboard uses a conservative stabilization window to avoid false failures caused by cross-domain timing skew
 
 - `COMMIT_STABLE_DELAY = 30ns`
 
@@ -61,38 +67,30 @@ TB-side meaning:
 - After a burst becomes visible to the scoreboard model, the checker waits **30ns**
 - Only then does it treat the byte image as stable for cross-domain read comparison
 
-This is a **verification-side rule**, not a DUT guarantee.
+**This is a verification-side rule, not a DUT guarantee**
 
----
 
-## 4) Test list
 
-Implemented tests:
+## Test List
+
 - `axi_mm_smoke_test`
+- `axi_mm_directed_test`
 - `axi_mm_random_test`
 - `axi_mm_corner_test`
-- `axi_mm_directed_test`
 - `axi_mm_coverage_test`
 
----
 
-## 5) How to run (Questa / ModelSim)
+
+## Run Script
 
 Entry script:
 - `run.tcl`
 
-What it does:
-- Creates `logs/`
-- Keeps newest logs/wlf files
-- Runs the selected test/case
-- Generates timestamped outputs
-- Adds waves automatically
-
-Typical outputs:
+Outputs:
 - `logs/sim_YYYYMMDD_HHMMSS_seed<SEED>.log`
 - `logs/sim_YYYYMMDD_HHMMSS_seed<SEED>.wlf`
 
-Useful plusargs:
+Plusargs:
 - `+UVM_TESTNAME=<test_name>`
 - `+CASE=<tag>`
 - `+CASELIST=<tag0,tag1,...>`
@@ -100,40 +98,48 @@ Useful plusargs:
 - `+UVM_OBJECTION_TRACE`
 - `+UVM_FINISH_ON_COMPLETION=1`
 
----
 
-## 6) Case selection controls (`+CASE` / `+CASELIST`)
 
-Both `axi_mm_corner_test` and `axi_mm_coverage_test` use a case selector helper.
+## Smoke Test Case Suite (`axi_mm_smoke_test`)
 
-Priority:
-1. `+CASE=all` (or `ALL`)
-   - runs all cases inside the test
-2. `+CASE=<tag>`
-   - runs one specific case
-3. `+CASELIST=<tag0,tag1,...>`
-   - runs multiple selected cases
-4. If nothing is provided
-   - falls back to `DEFAULT_CASE`
+1. **Simple burst case**
 
-Examples:
-- Run a single corner case:
-  - `+UVM_TESTNAME=axi_mm_corner_test +CASE=11`
-- Run multiple cases:
-  - `+UVM_TESTNAME=axi_mm_corner_test +CASELIST=2,5,6,12`
-- Run a full completion case:
-  - `+UVM_TESTNAME=axi_mm_coverage_test +CASELIST=8`
 
-Note:
-- `+CASELIST=8` does **not** automatically include sub-cases like `8.1`, `8.2` unless those are explicitly supported and listed by the test
 
----
+## Directed Test Case Suite (`axi_mm_directed_test`)
 
-## 7) Corner case suite (`axi_mm_corner_test`)
+1. **Single beat write/read**
+2. **Multi-beat INCR burst write/read**
+3. **WRAP burst write/read** 
+4. **Partial strobe write + readback**
+5. **Cross-port coherence + same-address partial collision**
+6. **Same-address cross-port collision + byte-merge**
+7. **Burst integrity stress + cross-port coherence**
+8. **Parallel same address INCR 8 beats with complementary WSTRB**
+9. **Same address multi-beat byte merge across ports**
+10. **Same address parallel INCR 8 beats + interleaved WSTRB**
+11. **Stall `commit_if.ready` while issuing a P1 write burst**
+12. **Stall P0 BREADY while issuing multiple write bursts**
 
-The corner test is organized as selectable cases so I can isolate failures quickly.
 
-### Case map
+
+## Random Test Case Suite (`axi_mm_random_test`)
+
+1. **Baseline split**
+2. **W stream gaps split**
+3. **Backpressure split**
+4. **Heavy backpressure split**
+5. **Timing jitter split**
+6. **Soak split**
+7. **Fixed split**
+8. **Wrap split mix stress**
+9. **Size rand split mix**
+10. **Partial WSTRB split stress**
+
+
+
+## Corner Test Case Suite (`axi_mm_corner_test`)
+
 1. **LEN=0 single-beat (INCR/FIXED) + WSTRB**
 2. **Boundary crossing + end-of-window**
 3. **Ordering + partial merge (per-window)**
@@ -153,94 +159,88 @@ The corner test is organized as selectable cases so I can isolate failures quick
 13. **READY backpressure**
 14. **Complete regression / completion suite**
 
----
 
-## 8) Coverage-driven suite (`axi_mm_coverage_test`)
 
-Coverage test is organized into coarse-grain sweeps / stress suites:
+## Coverage Test Case Suite (`axi_mm_coverage_test`)
 
-1. `run_cov1_smoke()`
-2. `run_cov2_burst_len_size_sweep()`
-3. `run_cov3_wstrb_stress()`
-4. `run_cov4_boundary_edge_sweep()`
-5. `run_cov5_ordering_suite()`
-6. `run_cov6_ready_backpressure()`
-7. `run_cov7_reset_injection()`
-8. `run_cov8_completion_suite()`
+1. **Plumbing smoke**
+2. **Burst len size sweep**
+3. **WSTRB stress**
+4. **Boundary & End-of-mem bias**
+5. **Ordering/Outstanding/ID**
+6. **READY/backpressure**
+7. **Reset injection**
+8. **Completion coverage suite**
 
----
 
-## 9) COV4 debug story: how the final mismatch issue was found and fixed
+
+## Coverage Test COV4 Debug Story
 
 This was the main issue near project closure.
 
-### 9.1 What happened
+### Preface
 
-At one point, the earlier regressions were already passing, and the project looked close to done.  
-The remaining problem showed up during:
+At one point, the earlier regressions were already passing, and the project looked close to done. The remaining problem showed up during:
 
 - **Coverage Test Case 8: complete coverage suite**
 
 That run exposed scoreboard mismatches that were not showing up in the simpler tests.
 
-Because Case 8 is a completion/closure style suite, the next step was to figure out **which individual coverage case was actually causing the mismatch**.
+Because Case 8 is a completion/closure style suite, the next step was to figure out which individual coverage case was actually causing the mismatch.
 
 After narrowing it down, the failure source was traced back to:
 
 - **Coverage Case 4**
 
-At that point, the first suspicion was:
-- maybe this is a **boundary crossing** problem
-- or maybe this is an **end-of-memory** problem
+The first suspicion was:
+- Maybe a **boundary crossing** problem
+- Maybe this is an **end-of-memory** problem
 
-That turned out to be a useful direction, but not the full story.
+### Rework
 
----
-
-### 9.2 Why Case 4 was reworked
-
-Originally, Case 4 mixed together edge-biased traffic in a way that made debug harder.
+Originally, Case 4 mixed together edge-biased traffic in a way that made debug harder
 
 So I reworked it into two clearer modes:
 
+
 ```systemverilog
-// COV4 mode control
 bit COV4_RUN_BOUNDARY   = 1;
 bit COV4_RUN_END_OF_MEM = 0;
+```
 
 The idea was to split COV4 into:
 
-boundary-focused sweep
+- Boundary-focused sweep
 
-end-of-memory-focused sweep
+- End-of-memory-focused sweep
 
 That made it much easier to isolate whether the mismatch was really caused by one specific address-region behavior.
 
-9.3 Boundary-only result
+### Boundary-only result
 
 I first ran only the boundary side of Case 4.
 
 That run eventually became clean:
 
-no scoreboard mismatch
+- No scoreboard mismatch
 
-scoreboard final result: PASS
+- Scoreboard final result: PASS
 
 This showed that the current environment could survive the boundary-focused stress after the scoreboard updates.
 
-9.4 End-of-memory-only result
+### End-of-memory-only result
 
 Next I ran only the end-of-memory side.
 
 That also completed clean:
 
-no scoreboard mismatch
+- No scoreboard mismatch
 
-scoreboard final result: PASS
+- Scoreboard final result: PASS
 
 This was important, because it showed the issue was not simply "boundary bad" or "end-of-mem bad" in isolation.
 
-9.5 Both enabled together
+### Both enabled together
 
 After that, I enabled both:
 
@@ -250,222 +250,174 @@ COV4_RUN_END_OF_MEM = 1
 
 This combined run also passed with:
 
-mismatches = 0
+- Mismatches = 0
 
 That was the key sign that Case 4 itself was finally stable enough to be put back into the full completion suite.
 
-9.6 What the real issue actually was
+### Actual Issue
 
 The root cause was not just an address-edge bug.
 
 The real issue was that the scoreboard initially did not fully match the DUT's apply visibility behavior.
 
-Important DUT behavior:
+- **Important DUT behavior**
 
-a burst is updated atomically in memory
+  - A burst is updated atomically in memory
+  - Then `apply_if` emits beats one by one
 
-then apply_if emits beats one by one
+  - So the memory image is already updated, but apply emission is still being drained over time
 
-so the memory image is already updated, but apply emission is still being drained over time
+This means the scoreboard cannot simply assume: "Each apply beat becomes visible independently as it arrives" => That assumption is too weak for this DUT.
 
-This means the scoreboard cannot simply assume:
-
-"each apply beat becomes visible independently as it arrives"
-
-That assumption is too weak for this DUT.
-
-What was needed:
-
-Treat a burst as having a common visibility point for the scoreboard model
-
-At the same time, defer read comparison when a read touches the future tail of an apply burst that has not been fully observed yet
+- **What was needed**
+  - Treat a burst as having a common visibility point for the scoreboard
+  - At the same time, defer read comparison when a read touches the future tail of an apply burst that has not been fully observed yet
 
 That was the critical alignment that removed the false mismatches.
 
-9.7 Final scoreboard behavior used for closure
+### Scoreboard Behavior After the Fix
 
 The final scoreboard approach that worked was:
 
-byte-level reference model
+- Byte-level reference model
 
-apply_if-driven visibility
+- `apply_if` driven visibility
 
-burst-aware apply tracking
+- Burst-aware apply tracking
 
-deferred read compare when a read overlaps the still-in-progress future tail of an apply burst
+- Deferred read compare when a read overlaps the still-in-progress future tail of an apply burst
 
-conservative COMMIT_STABLE_DELAY = 30ns
+- `COMMIT_STABLE_DELAY` = 30ns
 
-After this change:
+**After this change**
 
-the previous Case 4 mismatch went away
+- Case 4 mismatch went away
 
-full coverage completion became stable
+- Full coverage completion became stable
 
-later regression runs also stayed clean
+- Regression runs also stayed clean
 
-10) Regression status after the fix
+  
 
-After fixing the scoreboard alignment problem, I reran the important tests.
+### Regression 
 
-Smoke test
+After fixing the scoreboard alignment problem, I reran the important tests (basically most the tests).
 
-PASS
+- **Smoke test**
 
-mismatches = 0
+  - PASS
 
-Directed test
+  - Mismatches = 0
 
-PASS
+- **Directed test** **(All cases)**
 
-mismatches = 0
+  - PASS
 
-Random test
+  - Mismatches = 0
 
-PASS
+- **Random test (All cases)**
 
-mismatches = 0
+  - PASS
 
-Corner test Case 14 (complete suite / regression)
+  - Mismatches = 0
 
-PASS
+- **Corner test Case 14 (complete suite)**
 
-mismatches = 0
+  - PASS
+  - Mismatches = 0
 
-pending_read = 0
+  - `pending_read` = 0
 
-Coverage test Case 8 (complete coverage suite)
+- **Coverage test Case 8 (complete coverage suite)**
 
-PASS
+  - PASS
 
-mismatches = 0
+  - Mismatches = 0
 
-pending_read = 0
+  - `pending_read` = 0
 
-This was the point where I considered the project functionally closed from the mismatch/debug perspective.
+This was the point where I considered the project functionally can be closed from the mismatch/debug perspective.
 
-11) Results summary
-Final regression status
+### Results summary
+- Final regression status
 
-Smoke test: PASS
+  - Smoke test: PASS
 
-Directed test: PASS
+  - Directed test: PASS	
 
-Random test: PASS
+  - Random test: PASS
 
-Corner complete suite: PASS
+  - Corner test: PASS
 
-Coverage completion suite: PASS
+  - Coverage test: PASS
 
-Final scoreboard status
+- Final scoreboard status
 
-No remaining mismatches in the main regression runs
+  - No remaining mismatches in the main regression runs
 
-Case 8 now passes cleanly
+  - Case 8 (Coverage Test complete suite) passes cleanly
 
-The issue that originally appeared only in coverage closure is now resolved
+  - The issue that originally appeared only in coverage closure is now resolved
 
-12) Coverage status
+    
+
+## Coverage status
 
 Earlier functional coverage result:
 
-70.53% total covergroup coverage
+- **70.53%** total covergroup coverage
 
 After reworking COV4 and closing the scoreboard alignment issue:
 
-96.14% total covergroup coverage
+- **96.14%** total covergroup coverage
 
-Reported result:
+### Reported result
 
-TOTAL COVERGROUP COVERAGE: 96.14%
+- TOTAL COVERGROUP COVERAGE: 96.14%
 
-Errors: 0, Warnings: 0
+- Errors: 0, Warnings: 0
 
 This was a major improvement and is worth recording because it reflects both:
 
-better coverage intent in the stimulus
+- Better coverage intent in the stimulus
 
-successful closure of the hard mismatch issue that blocked the completion run
+- Successful closure of the hard mismatch issue that blocked the completion run
 
-13) Why the remaining deferred reads were not treated as a blocker
+### Integration / known Limitation Notes
+- Read burst admission (RD FIFO capacity)
 
-During some intermediate runs, the scoreboard still reported non-zero pending_read counts at end of test.
-
-Important point:
-
-these pending reads were not the original mismatch bug
-
-they were mostly scoreboard bookkeeping / end-of-test timing artifacts
-
-the real blocking problem was the mismatch
-
-once mismatch was gone and full completion regressions passed, reducing pending_read further became an optimization topic, not a correctness blocker
-
-This was especially clear after:
-
-Case 4 passed
-
-Case 8 passed
-
-smoke/directed/random/corner regression also passed
-
-So for project closure, the correct priority was:
-
-eliminate mismatches
-
-confirm coverage completion suite passes
-
-rerun main regression tests
-
-document the result
-
-That sequence is now complete.
-
-14) Integration / known limitation notes
-Read burst admission (RD FIFO capacity)
-
-The DUT read path uses an internal per-port read FIFO (RD_FIFO_DEPTH).
-AR is admitted only if the whole burst can fit:
-
-(ARLEN + 1) <= RD_FIFO_DEPTH
+- DUT Read path uses an internal per-port read FIFO (RD_FIFO_DEPTH)
+- AR is admitted only if the whole burst can fit:
+  - `(ARLEN + 1) <= RD_FIFO_DEPTH`
 
 This is intentional for deterministic behavior, but it means:
 
-if a master issues read bursts longer than RD_FIFO_DEPTH, ARREADY may remain low
+- If a master issues read bursts longer than `RD_FIFO_DEPTH`, `ARREADY` may remain low
 
-the read can stall
+- The read can stall
 
 Expected usage:
 
-chunked/tiled reads
+- Chunked/tiled reads
+  - Or increase `RD_FIFO_DEPTH` if needed
 
-or increase RD_FIFO_DEPTH if needed
+### Debug notes
 
-15) Practical debug notes / lessons learned
+- For DUT, scoreboard alignment had to follow apply visibility semantics, not only commit completion
 
-A few things that helped during closure:
+- In a multi-clock verification-oriented model, conservative stabilization rules are sometimes necessary to avoid false mismatches
 
-Splitting a failing coverage case into smaller modes was worth it
-(boundary vs end_of_mem)
+- When the last issue only appears in a completion suite, it is usually worth isolating the responsible sub-case first before changing too much at once
 
-For this DUT, scoreboard alignment had to follow apply visibility semantics, not only commit completion
+  
 
-In a multi-clock verification-oriented model, conservative stabilization rules are sometimes necessary to avoid false mismatches
+## Project status
 
-When the last issue only appears in a completion suite, it is usually worth isolating the responsible sub-case first before changing too much at once
+- No mismatches in all test cases
 
-16) Project status
+- Coverage completion suite (Case 8) passes
 
-At this point:
+- Main regression tests pass
 
-the original mismatch issue found during coverage closure has been resolved
-
-Case 4 passes in boundary-only, end-of-memory-only, and combined mode
-
-Coverage completion suite (Case 8) passes
-
-Main regression tests pass
-
-functional covergroup coverage improved to 96.14%
-
-So from the verification side, this project is now in a good state to close and document.
+- Functional covergroup coverage improved to 96.14%
+- Project is now in a good state to close
