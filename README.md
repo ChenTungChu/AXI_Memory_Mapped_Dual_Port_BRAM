@@ -247,6 +247,6 @@ Typical usage:
 
 - Weight / activation scratchpad
 
-- DMA ↔ core clock decoupling layer
+- DMA ↔ Core clock decoupling layer
 
 - Deterministic shared memory boundary for subsystem testing
