@@ -14,6 +14,11 @@ class axi_mm_driver #(
 
     virtual axi_mm_if #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, 1).mp_master vif;
 
+    // The driver uses cb_master only for clock synchronization and
+    // response sampling.  Request-side signals are driven through the
+    // raw mp_master outputs to avoid Questa implicit clocking-block
+    // multiple-driver warnings on interfaces reused as RTL links.
+
     `uvm_component_param_utils(axi_mm_driver #(ADDR_WIDTH, DATA_WIDTH, ID_WIDTH, WAIT_TIMEOUT))
 
     // Knobs
@@ -154,30 +159,30 @@ class axi_mm_driver #(
     endtask
 
     task automatic drive_idle_now();
-        vif.cb_master.awvalid <= 1'b0;
-        vif.cb_master.arvalid <= 1'b0;
+        vif.awvalid <= 1'b0;
+        vif.arvalid <= 1'b0;
 
-        vif.cb_master.wvalid  <= 1'b0;
-        vif.cb_master.wlast   <= 1'b0;
-        vif.cb_master.wdata   <= '0;
-        vif.cb_master.wstrb   <= '0;
+        vif.wvalid <= 1'b0;
+        vif.wlast <= 1'b0;
+        vif.wdata <= '0;
+        vif.wstrb <= '0;
 
-        vif.cb_master.bready  <= (hold_bready_high) ? 1'b1 : 1'b0;
-        vif.cb_master.rready  <= (hold_rready_high) ? 1'b1 : 1'b0;
+        vif.bready <= (hold_bready_high) ? 1'b1 : 1'b0;
+        vif.rready <= (hold_rready_high) ? 1'b1 : 1'b0;
     endtask
 
     task automatic drive_idle_abort();
-        vif.cb_master.awvalid <= 1'b0;
-        vif.cb_master.arvalid <= 1'b0;
+        vif.awvalid <= 1'b0;
+        vif.arvalid <= 1'b0;
 
-        vif.cb_master.wvalid  <= 1'b0;
-        vif.cb_master.wlast   <= 1'b0;
-        vif.cb_master.wdata   <= '0;
-        vif.cb_master.wstrb   <= '0;
+        vif.wvalid <= 1'b0;
+        vif.wlast <= 1'b0;
+        vif.wdata <= '0;
+        vif.wstrb <= '0;
 
         // Hold low during abort/reset/flush
-        vif.cb_master.bready  <= 1'b0;
-        vif.cb_master.rready  <= 1'b0;
+        vif.bready <= 1'b0;
+        vif.rready <= 1'b0;
     endtask
 
     task automatic init_signals();
@@ -204,36 +209,36 @@ class axi_mm_driver #(
 
     task automatic update_bready(input int unsigned wait_cyc);
         if (should_abort() || is_reset()) begin
-            vif.cb_master.bready <= 1'b0;
+            vif.bready <= 1'b0;
             return;
         end
         if (!stress_enable) begin
-            vif.cb_master.bready <= 1'b1;
+            vif.bready <= 1'b1;
             return;
         end
         if (hold_bready_high) begin
-            vif.cb_master.bready <= 1'b1;
+            vif.bready <= 1'b1;
             return;
         end
-        if (wait_cyc >= force_ready_after) vif.cb_master.bready <= 1'b1;
-        else                               vif.cb_master.bready <= roll_prob(bready_prob);
+        if (wait_cyc >= force_ready_after) vif.bready <= 1'b1;
+        else                               vif.bready <= roll_prob(bready_prob);
     endtask
 
     task automatic update_rready(input int unsigned wait_cyc);
         if (should_abort() || is_reset()) begin
-            vif.cb_master.rready <= 1'b0;
+            vif.rready <= 1'b0;
             return;
         end
         if (!stress_enable) begin
-            vif.cb_master.rready <= 1'b1;
+            vif.rready <= 1'b1;
             return;
         end
         if (hold_rready_high) begin
-            vif.cb_master.rready <= 1'b1;
+            vif.rready <= 1'b1;
             return;
         end
-        if (wait_cyc >= force_ready_after) vif.cb_master.rready <= 1'b1;
-        else                               vif.cb_master.rready <= roll_prob(rready_prob);
+        if (wait_cyc >= force_ready_after) vif.rready <= 1'b1;
+        else                               vif.rready <= roll_prob(rready_prob);
     endtask
 
     task automatic maybe_wait_cycles(int unsigned max_cycles);
@@ -445,18 +450,18 @@ class axi_mm_driver #(
             return;
         end
 
-        vif.cb_master.awvalid <= 1'b1;
-        vif.cb_master.awaddr  <= tr.addr;
-        vif.cb_master.awlen   <= tr.len;
-        vif.cb_master.awsize  <= tr.size;
-        vif.cb_master.awburst <= tr.burst;
-        vif.cb_master.awid    <= tr.id;
+        vif.awvalid <= 1'b1;
+        vif.awaddr <= tr.addr;
+        vif.awlen <= tr.len;
+        vif.awsize <= tr.size;
+        vif.awburst <= tr.burst;
+        vif.awid <= tr.id;
 
         for (int unsigned cyc = 0; cyc < WAIT_TIMEOUT; cyc++) begin
             @(vif.cb_master);
 
             if (is_reset() || should_abort()) begin
-                vif.cb_master.awvalid <= 1'b0;
+                vif.awvalid <= 1'b0;
                 return;
             end
 
@@ -468,13 +473,13 @@ class axi_mm_driver #(
                 aw_burst_lat = vif.awburst;
                 aw_id_lat    = vif.awid;
 
-                vif.cb_master.awvalid <= 1'b0;
+                vif.awvalid <= 1'b0;
                 break;
             end
         end
 
         if (!aw_hs) begin
-            vif.cb_master.awvalid <= 1'b0;
+            vif.awvalid <= 1'b0;
             `uvm_fatal("HS_TIMEOUT", $sformatf("AW_ONLY TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
     endtask
@@ -514,31 +519,31 @@ class axi_mm_driver #(
                 return;
             end
 
-            vif.cb_master.wvalid <= 1'b1;
-            vif.cb_master.wdata  <= wdata_drive;
-            vif.cb_master.wstrb  <= wstrb_drive;
-            vif.cb_master.wlast  <= (i == beats-1);
+            vif.wvalid <= 1'b1;
+            vif.wdata <= wdata_drive;
+            vif.wstrb <= wstrb_drive;
+            vif.wlast <= (i == beats-1);
 
             for (int unsigned cyc = 0; cyc < WAIT_TIMEOUT; cyc++) begin
                 @(vif.cb_master);
 
                 if (is_reset() || should_abort()) begin
-                    vif.cb_master.wvalid <= 1'b0;
-                    vif.cb_master.wlast  <= 1'b0;
+                    vif.wvalid <= 1'b0;
+                    vif.wlast <= 1'b0;
                     return;
                 end
 
                 if ((vif.wvalid === 1'b1) && (vif.cb_master.wready === 1'b1)) begin
                     w_hs = 1;
-                    vif.cb_master.wvalid <= 1'b0;
-                    vif.cb_master.wlast  <= 1'b0;
+                    vif.wvalid <= 1'b0;
+                    vif.wlast <= 1'b0;
                     break;
                 end
             end
 
             if (!w_hs) begin
-                vif.cb_master.wvalid <= 1'b0;
-                vif.cb_master.wlast  <= 1'b0;
+                vif.wvalid <= 1'b0;
+                vif.wlast <= 1'b0;
                 `uvm_fatal("HS_TIMEOUT", $sformatf("W_ONLY TIMEOUT %0d cycles, addr=0x%0h id=%0d beat=%0d", WAIT_TIMEOUT, tr.addr, tr.id, i))
             end
         end
@@ -620,18 +625,18 @@ class axi_mm_driver #(
         end
 
         // AW
-        vif.cb_master.awvalid <= 1'b1;
-        vif.cb_master.awaddr  <= tr.addr;
-        vif.cb_master.awlen   <= tr.len;
-        vif.cb_master.awsize  <= tr.size;
-        vif.cb_master.awburst <= tr.burst;
-        vif.cb_master.awid    <= tr.id;
+        vif.awvalid <= 1'b1;
+        vif.awaddr <= tr.addr;
+        vif.awlen <= tr.len;
+        vif.awsize <= tr.size;
+        vif.awburst <= tr.burst;
+        vif.awid <= tr.id;
 
         for (int unsigned cyc = 0; cyc < WAIT_TIMEOUT; cyc++) begin
             @(vif.cb_master);
 
             if (is_reset() || should_abort()) begin
-                vif.cb_master.awvalid <= 1'b0;
+                vif.awvalid <= 1'b0;
                 return;
             end
 
@@ -643,13 +648,13 @@ class axi_mm_driver #(
                 aw_burst_lat = vif.awburst;
                 aw_id_lat    = vif.awid;
 
-                vif.cb_master.awvalid <= 1'b0;
+                vif.awvalid <= 1'b0;
                 break;
             end
         end
 
         if (!aw_hs) begin
-            vif.cb_master.awvalid <= 1'b0;
+            vif.awvalid <= 1'b0;
             `uvm_fatal("HS_TIMEOUT", $sformatf("AW TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
 
@@ -714,18 +719,18 @@ class axi_mm_driver #(
         end
 
         // AR
-        vif.cb_master.arvalid <= 1'b1;
-        vif.cb_master.araddr  <= tr.addr;
-        vif.cb_master.arlen   <= tr.len;
-        vif.cb_master.arsize  <= tr.size;
-        vif.cb_master.arburst <= tr.burst;
-        vif.cb_master.arid    <= tr.id;
+        vif.arvalid <= 1'b1;
+        vif.araddr <= tr.addr;
+        vif.arlen <= tr.len;
+        vif.arsize <= tr.size;
+        vif.arburst <= tr.burst;
+        vif.arid <= tr.id;
 
         for (int unsigned cyc = 0; cyc < WAIT_TIMEOUT; cyc++) begin
             @(vif.cb_master);
 
             if (is_reset() || should_abort()) begin
-                vif.cb_master.arvalid <= 1'b0;
+                vif.arvalid <= 1'b0;
                 return;
             end
 
@@ -737,20 +742,20 @@ class axi_mm_driver #(
                 ar_burst_lat = vif.arburst;
                 ar_id_lat    = vif.arid;
 
-                vif.cb_master.arvalid <= 1'b0;
+                vif.arvalid <= 1'b0;
                 break;
             end
         end
 
         if (!ar_hs) begin
-            vif.cb_master.arvalid <= 1'b0;
+            vif.arvalid <= 1'b0;
             `uvm_fatal("HS_TIMEOUT", $sformatf("AR TIMEOUT %0d cycles, addr=0x%0h id=%0d", WAIT_TIMEOUT, tr.addr, tr.id))
         end
 
         // RREADY
         if (!hold_rready_high) begin
             @(vif.cb_master);
-            vif.cb_master.rready <= 1'b0;
+            vif.rready <= 1'b0;
         end
 
         update_rready(0);
@@ -784,7 +789,7 @@ class axi_mm_driver #(
         end
 
         @(vif.cb_master);
-        vif.cb_master.rready <= (hold_rready_high) ? 1'b1 : 1'b0;
+        vif.rready <= (hold_rready_high) ? 1'b1 : 1'b0;
     endtask
 
     // ------------------------------------------------------------

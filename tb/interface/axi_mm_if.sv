@@ -63,8 +63,12 @@ interface axi_mm_if #(
 
     // ------------------------------------------------------------
     // Driver clocking block (MASTER)
-    // - Drives request channels
-    // - Samples response channels + rst_n
+    // - Samples request / response channels + rst_n
+    // - Does not declare clocking outputs.
+    //   Questa treats clocking outputs as implicit drivers even when the
+    //   interface instance is used as an internal RTL link.  The UVM
+    //   master driver therefore drives raw modport outputs and uses this
+    //   clocking block only for synchronization / sampling.
     // ------------------------------------------------------------
     clocking cb_master @(posedge clk);
         default input #1step output #0;
@@ -72,13 +76,15 @@ interface axi_mm_if #(
         // Sample reset
         input rst_n;
 
-        // Drive
-        output awid, awaddr, awlen, awsize, awburst, awvalid;
-        output wdata, wstrb, wlast, wvalid;
-        output arid, araddr, arlen, arsize, arburst, arvalid;
-        output bready, rready;
+        // Sample request channels driven by the UVM master raw modport
+        // outputs.  Keeping these as inputs avoids an implicit clocking
+        // block driver on every axi_mm_if instance.
+        input awid, awaddr, awlen, awsize, awburst, awvalid;
+        input wdata, wstrb, wlast, wvalid;
+        input arid, araddr, arlen, arsize, arburst, arvalid;
+        input bready, rready;
 
-        // Sample
+        // Sample slave response channels.
         input awready, wready;
         input bvalid, bresp, bid;
         input arready;
@@ -103,8 +109,8 @@ interface axi_mm_if #(
 
     // ------------------------------------------------------------
     // TB Driver (MASTER)
-    // - Expose cb_master for synchronous driving
-    // - Expose raw signals so TB can READ without cb-output warnings
+    // - Expose cb_master for synchronization / sampling
+    // - Expose raw request signals as the only UVM master drivers
     // ------------------------------------------------------------
     modport mp_master (
         input  clk, rst_n,

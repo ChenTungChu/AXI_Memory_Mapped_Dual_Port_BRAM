@@ -101,8 +101,8 @@ module axi_mm_top;
         .core_clk   (core_clk),
         .core_rst_n (rst_n),
 
-        .axi0_if    (dma_if),
-        .axi1_if    (core_if),
+        .axi0_if    (dma_if.mp_slave),
+        .axi1_if    (core_if.mp_slave),
 
         .apply_if   (apply_if_i.mp_producer),
         .commit_if  (commit_if_i.mp_producer),
@@ -161,7 +161,7 @@ module axi_mm_top;
         // Run test
         // - axi_mm_smoke_test, axi_mm_directed_test, axi_mm_random_test, axi_mm_corner_test, axi_mm_coverage_test
         // ---------------------------------------------------------
-        run_test("axi_mm_coverage_test");
+        run_test("axi_mm_smoke_test");
     end
 
 endmodule

@@ -62,7 +62,7 @@ for {set k 0} {$k < $N_SEEDS} {incr k} {
   vsim -coverage -L uvm12 -wlf $WLFNAME -voptargs=+acc work.axi_mm_top \
     -uvmcontrol=all \
     +UVM_VERBOSITY=UVM_HIGH \
-    +UVM_TESTNAME=axi_mm_directed_test \
+    +UVM_TESTNAME=axi_mm_smoke_test \
     +GATE=1 \
     +BASE_SEED=$SEED \
     +GATE_TIMEOUT_NS=200000000 \

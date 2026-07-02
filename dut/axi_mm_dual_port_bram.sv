@@ -84,8 +84,8 @@ module axi_mm_dual_port_bram #(
     input  logic core_clk,
     input  logic core_rst_n,
 
-    axi_mm_if axi0_if,
-    axi_mm_if axi1_if,
+    axi_mm_if.mp_slave axi0_if,
+    axi_mm_if.mp_slave axi1_if,
 
     // Apply observation interface (dma_clk domain, 1 event per applied beat)
     axi_mm_apply_if.mp_producer  apply_if,
